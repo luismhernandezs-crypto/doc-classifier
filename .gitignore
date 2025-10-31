@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+*.log
+minio/
+n8n_data/
+postgres/
+.env
+
