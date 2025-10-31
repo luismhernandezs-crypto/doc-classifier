@@ -45,6 +45,15 @@ services:
       - ocr_service
       - postgres
 
+
+  frontend_service:
+   build: ./frontend_service
+   container_name: frontend_service
+   ports:
+    - "5000:5000"
+   depends_on:
+    - ocr_service
+
   n8n:
    image: n8nio/n8n
    restart: always
