@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY . /app
 
-RUN pip install fastapi uvicorn requests python-multipart
+RUN pip install --no-cache-dir fastapi uvicorn requests python-multipart psycopg2-binary
 
 EXPOSE 5000
 
