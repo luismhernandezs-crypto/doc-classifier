@@ -47,12 +47,19 @@ services:
 
 
   frontend_service:
-   build: ./frontend_service
-   container_name: frontend_service
-   ports:
-    - "5000:5000"
-   depends_on:
-    - ocr_service
+    build: ./frontend_service
+    container_name: frontend_service
+    ports:
+     - "5000:5000"
+    depends_on:
+     - ocr_service
+  smav_service:
+    build: ./smav_service
+    container_name: smav_service
+    ports:
+     - "8090:8090"
+    depends_on:
+     - classifier_service
 
   n8n:
    image: n8nio/n8n
