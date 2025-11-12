@@ -1,15 +1,16 @@
+# classifier.py
 from fastapi import FastAPI, Request
 from datetime import datetime
 import requests
 import psycopg2
 from psycopg2 import OperationalError
 
-app = FastAPI(title="Classifier Service - SMAV + PostgreSQL")
+app = FastAPI(title="Classifier Service - Integración SMAV + PostgreSQL")
 
-# URL interna del servicio SMAV dentro del Docker network
+# 🔹 URL del servicio SMAV (dentro de la red Docker)
 SMAV_URL = "http://smav_service:8090/predict"
 
-# Configuración de PostgreSQL
+# 🔹 Configuración de conexión a PostgreSQL
 DB_CONFIG = {
     "host": "postgres",
     "port": "5432",
@@ -18,8 +19,12 @@ DB_CONFIG = {
     "password": "admin123"
 }
 
-# ---- Función para inicializar la base de datos ----
+# =====================================================
+# 🧱 Funciones de inicialización y conexión con la BD
+# =====================================================
+
 def init_db():
+    """Crea la tabla de clasificaciones si no existe."""
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
@@ -38,12 +43,11 @@ def init_db():
     except Exception as e:
         print(f"⚠️ Error al inicializar la base de datos: {e}")
 
-# ---- Función para guardar el registro ----
-def save_to_db(text, categoria):
+def save_to_db(text: str, categoria: str):
+    """Guarda el resultado de una clasificación en PostgreSQL."""
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
-        print(f"💾 Guardando en BD → texto: '{text[:40]}...', categoría: {categoria}")
         cursor.execute("""
             INSERT INTO clasificaciones (texto, categoria, fecha)
             VALUES (%s, %s, %s)
@@ -51,7 +55,7 @@ def save_to_db(text, categoria):
         conn.commit()
         cursor.close()
         conn.close()
-        print("✅ Registro guardado correctamente en PostgreSQL.")
+        print(f"💾 Registro guardado correctamente: {categoria}")
     except OperationalError as e:
         print(f"⚠️ Error de conexión con PostgreSQL: {e}")
     except Exception as e:
@@ -59,30 +63,45 @@ def save_to_db(text, categoria):
 
 @app.on_event("startup")
 def startup_event():
+    """Inicializa la base de datos al iniciar el servicio."""
     init_db()
+
+# =====================================================
+# 🌐 Endpoints principales
+# =====================================================
 
 @app.get("/")
 def root():
-    return {"message": "Classifier API running and connected to SMAV + PostgreSQL!"}
+    return {"message": "✅ Classifier API corriendo e integrada con SMAV y PostgreSQL"}
 
 @app.post("/classify-text")
 async def classify_text(request: Request):
+    """Recibe texto desde el frontend, lo envía a SMAV y guarda la clasificación."""
     data = await request.json()
-    text = data.get("text", "")
+    text = data.get("text", "").strip()
+
+    if not text:
+        return {"error": "❌ No se recibió texto para clasificar"}
 
     try:
+        # Enviar texto al servicio SMAV
         response = requests.post(SMAV_URL, json={"text": text})
+
         if response.status_code == 200:
             result = response.json()
             categoria = result.get("categoria_predicha", "Desconocido")
-            print(f"📤 SMAV respondió: {categoria}")
+
+            # Guardar en PostgreSQL
             save_to_db(text, categoria)
-            return {"texto": text, "categoria": categoria}
+
+            print(f"📤 Clasificación exitosa → {categoria}")
+            return {"texto": text[:150], "categoria": categoria}
         else:
-            error_msg = f"SMAV devolvió error HTTP {response.status_code}"
-            print(f"⚠️ {error_msg}")
+            error_msg = f"⚠️ SMAV devolvió error HTTP {response.status_code}"
+            print(error_msg)
             return {"error": error_msg}
+
     except Exception as e:
-        print(f"⚠️ No se pudo conectar con SMAV: {e}")
-        return {"error": f"No se pudo conectar con SMAV: {str(e)}"}
+        print(f"❌ Error comunicando con SMAV: {e}")
+        return {"error": f"No se pudo conectar con SMAV: {e}"}
 

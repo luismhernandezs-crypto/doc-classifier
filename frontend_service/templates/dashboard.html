@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h1 class="text-2xl font-bold mb-6">
+    Bienvenido, {{ user.username }} ({{ user.rol }})
+  </h1>
+
+  {% if user.rol != "admin" %}
+    <!-- Usuario normal: descripción inicial -->
+    <p class="text-gray-300 mb-4">
+      Este sistema permite subir documentos, extraer texto mediante OCR y clasificarlos automáticamente.
+    </p>
+
+    <button
+      id="show-upload-btn"
+      class="bg-[#5865f2] px-4 py-2 rounded hover:bg-[#4752c4] mb-4">
+      Subir archivo
+    </button>
+  {% endif %}
+
+  <!-- Formulario de subida, oculto inicialmente para usuarios normales -->
+  <form
+    id="upload-form"
+    action="/upload"
+    enctype="multipart/form-data"
+    method="post"
+    class="space-y-4"
+    {% if user.rol != "admin" %}style="display:none;"{% endif %}>
+    
+    <input
+      type="file"
+      name="file"
+      accept="image/*,.pdf"
+      required
+      class="block p-2 bg-[#1e1f22] rounded">
+
+    <button
+      type="submit"
+      class="bg-[#5865f2] px-4 py-2 rounded hover:bg-[#4752c4]">
+      Procesar archivo
+    </button>
+  </form>
+
+  <script>
+    // Mostrar el formulario al hacer clic en el botón para usuarios normales
+    document.addEventListener("DOMContentLoaded", function() {
+      const btn = document.getElementById("show-upload-btn");
+      const form = document.getElementById("upload-form");
+      if (btn) {
+        btn.addEventListener("click", () => {
+          form.style.display = "block";
+          btn.style.display = "none"; // Ocultar el botón después de mostrar el formulario
+        });
+      }
+    });
+  </script>
+{% endblock %}

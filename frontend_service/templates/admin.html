@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">🧑‍💻 Panel de Administración</h1>
+
+<!-- Lista de usuarios -->
+<section class="mb-8">
+    <h2 class="text-xl font-semibold mb-4">Usuarios</h2>
+    <table class="w-full text-left border-collapse">
+        <thead class="bg-[#1e1f22]">
+            <tr>
+                <th class="p-2">Usuario</th>
+                <th class="p-2">Rol</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if users %}
+                {% for u in users %}
+                <tr class="border-t border-gray-700 hover:bg-[#2b2d31]">
+                    <td class="p-2">{{ u[0] }}</td>
+                    <td class="p-2">{{ u[1] }}</td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr><td colspan="2" class="text-center p-4">No hay usuarios registrados.</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</section>
+
+<!-- Estadísticas -->
+<section>
+    <h2 class="text-xl font-semibold mb-4">Estadísticas de documentos procesados</h2>
+
+    <!-- Botón de actualización -->
+    <button id="refreshStats" class="bg-[#5865f2] px-4 py-2 rounded hover:bg-[#4752c4] mb-4 transition-all">
+        🔄 Actualizar estadísticas
+    </button>
+
+    <table id="statsTable" class="w-full text-left border-collapse">
+        <thead class="bg-[#1e1f22]">
+            <tr>
+                <th class="p-2">Usuario</th>
+                <th class="p-2">Documentos procesados</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if stats %}
+                {% for s in stats %}
+                <tr class="border-t border-gray-700 hover:bg-[#1e1f22]">
+                    <td class="p-2">{{ s[0] }}</td>
+                    <td class="p-2">{{ s[1] }}</td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr><td colspan="2" class="text-center p-4">No hay registros de documentos.</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</section>
+
+<script>
+const button = document.getElementById('refreshStats');
+const tbody = document.querySelector('#statsTable tbody');
+
+button.addEventListener('click', async () => {
+    button.disabled = true;
+    const originalText = button.innerHTML;
+    button.innerHTML = '⏳ Actualizando...';
+    button.classList.add('opacity-70', 'cursor-not-allowed');
+
+    try {
+        const response = await fetch('/admin/stats');
+        if (!response.ok) throw new Error('Error de conexión');
+        const data = await response.json();
+
+        tbody.innerHTML = '';
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="2" class="text-center p-4">No hay registros de documentos.</td></tr>';
+        } else {
+            data.forEach(stat => {
+                const row = document.createElement('tr');
+                row.className = 'border-t border-gray-700 hover:bg-[#1e1f22]';
+                row.innerHTML = `<td class="p-2">${stat[0]}</td><td class="p-2">${stat[1]}</td>`;
+                tbody.appendChild(row);
+            });
+        }
+    } catch (err) {
+        tbody.innerHTML = '<tr><td colspan="2" class="text-center p-4 text-red-500">⚠️ Error al actualizar estadísticas.</td></tr>';
+        console.error('Error al obtener estadísticas:', err);
+    } finally {
+        button.disabled = false;
+        button.innerHTML = originalText;
+        button.classList.remove('opacity-70', 'cursor-not-allowed');
+    }
+});
+</script>
+{% endblock %}
+
