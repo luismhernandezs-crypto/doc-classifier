@@ -1,0 +1,36 @@
+
+FACTURA No. 100431
+
+Proveedor: Soluciones Integrales Comerciales S.A.S.
+NIT: 901234567-8
+Dirección: Calle 45 # 18-22, Bogotá D.C.
+Teléfono: (1) 745-8899
+Correo: contacto@solucionesintegrales.com.co
+
+Cliente: Distribuciones Nueva Era Ltda.
+NIT: 900876543-1
+Dirección: Carrera 30 # 15-40, Bogotá D.C.
+Fecha de emisión: 2025-11-17
+Fecha de vencimiento: 2025-12-17
+
+Descripción del servicio:
+La presente factura corresponde a la prestación del servicio de suministro, transporte 
+y entrega de insumos corporativos, incluyendo materiales de oficina, elementos de 
+arquivística y componentes complementarios para actividades administrativas. El proceso 
+incluyó validación previa de inventario, confirmación de especificaciones técnicas, 
+coordinación logística, alistamiento documentado y entrega con verificación de ítems 
+en sitio. El servicio se ejecutó cumpliendo con estándares internos de calidad, con 
+registros fotográficos y asentamientos de recibido firmados por el encargado asignado 
+por la empresa cliente. El alcance también contempló soporte post-entrega durante dos días 
+hábiles para reportes de inconsistencias o ajustes requeridos.
+
+Condiciones comerciales:
+El pago debe realizarse mediante transferencia bancaria a la cuenta corporativa indicada 
+en el documento adjunto. La mora generará intereses según la tasa máxima permitida por la ley. 
+Todas las transacciones están sujetas a verificación contable. Esta factura se expide de 
+acuerdo con la normativa vigente sobre facturación electrónica en Colombia.
+
+Observaciones:
+Gracias por confiar en nuestros servicios. Para cualquier solicitud adicional, ofrecemos 
+canales de soporte disponibles de lunes a viernes, 8:00 a.m. a 5:00 p.m.
+La operación fue revisada por el área financiera y aprobada siguiendo los procedimientos internos establecidos. 
