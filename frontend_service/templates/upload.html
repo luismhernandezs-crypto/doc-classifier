@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Subir Archivo{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+  <h2 class="text-center mb-4">Subir archivo para análisis OCR</h2>
+
+  <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
+   <label for="file">Selecciona un archivo:</label>
+   <input type="file" id="file" name="file" required>
+   <button type="submit" class="btn btn-primary">Procesar</button>
+  </form>
+
+  {% if result %}
+  <div class="mt-4">
+    <h4>📘 Categoría detectada: <span class="text-blue-400">{{ category }}</span></h4>
+    <h4 class="mt-3">🧾 Texto extraído (OCR):</h4>
+    <pre class="bg-gray-800 text-white p-3 rounded mt-2 whitespace-pre-wrap">{{ result }}</pre>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

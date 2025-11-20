@@ -1,25 +1,33 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <title>SMAV - Document Classifier</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+  <meta charset="UTF-8">
+  <title>SMAV OCR & Classifier</title>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-[#313338] text-white flex min-h-screen">
-    <aside class="w-64 bg-[#1e1f22] flex flex-col p-4 space-y-4">
-        <h2 class="text-xl font-bold text-white mb-4">📄 OCR System</h2>
-        <a href="/" class="hover:bg-[#5865f2] rounded p-2">🏠 Inicio</a>
-        <a href="/upload-form" class="hover:bg-[#5865f2] rounded p-2">📤 Subir archivo</a>
-        <a href="/history" class="hover:bg-[#5865f2] rounded p-2">📜 Historial</a>
-        {% if user and user.rol == "admin" %}
-        <a href="/admin" class="hover:bg-[#5865f2] rounded p-2">🧑‍💻 Admin Panel</a>
-        {% endif %}
-        <a href="/logout" class="hover:bg-red-600 rounded p-2">🚪 Cerrar sesión</a>
-    </aside>
 
-    <main class="flex-1 p-8">
-        {% block content %}{% endblock %}
-    </main>
+  <!-- Sidebar -->
+  <aside class="w-64 bg-[#1e1f22] flex flex-col p-4 space-y-4">
+    <h2 class="text-xl font-bold text-white mb-4">📄 SMAV OCR</h2>
+
+    <a href="/" class="hover:bg-[#5865f2] rounded p-2 block">🏠 Inicio</a>
+
+    {% if user %}
+      <a href="/upload" class="hover:bg-[#5865f2] rounded p-2 block">📤 Subir archivo</a>
+      <a href="/history" class="hover:bg-[#5865f2] rounded p-2 block">📜 Historial</a>
+      {% if user.rol == "admin" %}
+        <a href="/admin" class="hover:bg-[#5865f2] rounded p-2 block">🧑‍💻 Admin Panel</a>
+      {% endif %}
+      <a href="/logout" class="hover:bg-red-600 rounded p-2 block">🚪 Cerrar sesión</a>
+    {% else %}
+      <a href="/login" class="hover:bg-[#5865f2] rounded p-2 block">🔑 Iniciar sesión</a>
+      <a href="/register" class="hover:bg-[#4752c4] rounded p-2 block">📝 Registrarse</a>
+    {% endif %}
+  </aside>
+
+  <main class="flex-1 p-8">
+    {% block content %}{% endblock %}
+  </main>
 </body>
 </html>
-

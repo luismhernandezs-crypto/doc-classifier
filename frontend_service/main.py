@@ -10,9 +10,8 @@ from minio import Minio
 import requests, psycopg2, io, os, traceback
 
 # ---------------- CONFIGURACIÓN ----------------
-app = FastAPI(title="OCR + Classifier + MinIO + Login")
+app = FastAPI(title="SMAV OCR & Classifier")
 
-# monta static (asegúrate de que ./static existe en tu repo; puede estar vacío)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -21,9 +20,16 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24))
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# NOTA: Estas URLs ya no se usan directamente porque n8n orquesta todo,
+# pero las dejamos por si acaso necesitas depurar servicios individuales.
 OCR_URL = os.getenv("OCR_URL", "http://ocr_service:8000/extract-text")
 CLASSIFIER_URL = os.getenv("CLASSIFIER_URL", "http://classifier_service:8080/classify-text")
-N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "http://n8n:5678/webhook/new_user")
+
+# --- CONFIGURACIÓN DE N8N ---
+# IMPORTANTE: Dentro de Docker usamos "http://n8n:5678".
+# Si el workflow está "Active", usa "/webhook/". Si estás probando con el botón "Execute", usa "/webhook-test/".
+# Aquí configuramos la ruta de producción por defecto:
+N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "http://n8n:5678/webhook/procesar-documento")
 
 DB_CONFIG = {
     "host": os.getenv("POSTGRES_HOST", "postgres"),
@@ -33,6 +39,8 @@ DB_CONFIG = {
     "password": os.getenv("POSTGRES_PASSWORD", "admin123")
 }
 
+# MinIO Client (Solo lo usamos aquí para verificar buckets al inicio, 
+# n8n se encarga de subir los archivos ahora)
 MINIO_CLIENT = Minio(
     os.getenv("MINIO_HOST", "minio:9000"),
     access_key=os.getenv("MINIO_ROOT_USER", "admin"),
@@ -40,15 +48,14 @@ MINIO_CLIENT = Minio(
     secure=False
 )
 
-# intentamos crear buckets si es posible (no romper si MinIO no está listo)
 for bucket in ["incoming-docs", "classified-docs"]:
     try:
         if not MINIO_CLIENT.bucket_exists(bucket):
             MINIO_CLIENT.make_bucket(bucket)
     except Exception as e:
-        print(f"⚠️ Verificación/creación bucket '{bucket}' falló: {e}")
+        print(f"⚠️ Bucket '{bucket}' no creado: {e}")
 
-# ---------------- DB helpers ----------------
+# ---------------- DB ----------------
 def get_db_conn():
     return psycopg2.connect(**DB_CONFIG)
 
@@ -73,7 +80,6 @@ def init_db():
                 username VARCHAR(100) REFERENCES usuarios(username)
             );
         """)
-        # usuario admin por defecto (hash para 'admin123' ya incluido)
         cur.execute("""
             INSERT INTO usuarios (username, password_hash, rol)
             VALUES ('admin', '$2b$12$AFQe9b6uohAzbct6mGv5ueZ.zvayKv7QMLm8Y9PfAGHHqCwPZB42K', 'admin')
@@ -82,14 +88,13 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Tablas verificadas e inicializadas correctamente.")
+        print("✅ Base de datos inicializada correctamente.")
     except Exception as e:
-        print("⚠️ init_db: no se pudo inicializar la BD (espera que postgres arranque). Error:", e)
+        print("⚠️ Error inicializando la BD:", e)
 
-# Llamada segura a init_db (si postgres no está listo, no mata la app)
 init_db()
 
-# ---------------- auth helpers ----------------
+# ---------------- AUTH ----------------
 def create_token(username, rol):
     exp = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {"sub": username, "rol": rol, "exp": exp}
@@ -102,38 +107,29 @@ def decode_token(token):
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
 
 def get_user(username):
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT username, password_hash, rol FROM usuarios WHERE username=%s", (username,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row:
-            return {"username": row[0], "password_hash": row[1], "rol": row[2]}
-    except Exception as e:
-        print("⚠️ get_user error:", e)
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT username, password_hash, rol FROM usuarios WHERE username=%s", (username,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row:
+        return {"username": row[0], "password_hash": row[1], "rol": row[2]}
     return None
 
 def create_user(username, password, rol="usuario", email=None):
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        hashed = pwd_context.hash(password)
-        cur.execute("INSERT INTO usuarios (username, password_hash, rol) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING;",
-                    (username, hashed, rol))
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print("⚠️ create_user error:", e)
-        raise
+    conn = get_db_conn()
+    cur = conn.cursor()
+    hashed = pwd_context.hash(password)
+    cur.execute(
+        "INSERT INTO usuarios (username, password_hash, rol) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING;",
+        (username, hashed, rol),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def get_current_user_by_request(request: Request):
-    """
-    Intención: obtener usuario desde la cookie (usado en dependencias).
-    Lanzará HTTPException(401) si no hay cookie o token inválido.
-    """
     token = request.cookies.get("access_token")
     if not token:
         raise HTTPException(status_code=401, detail="No autenticado")
@@ -141,10 +137,20 @@ def get_current_user_by_request(request: Request):
     return {"username": payload.get("sub"), "rol": payload.get("rol")}
 
 # ---------------- RUTAS ----------------
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse("/login", status_code=302)
+    try:
+        payload = decode_token(token)
+        user = {"username": payload.get("sub"), "rol": payload.get("rol")}
+        return templates.TemplateResponse("index.html", {"request": request, "user": user})
+    except JWTError:
+        return RedirectResponse("/login", status_code=302)
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    # muestra el formulario de login
     return templates.TemplateResponse("login.html", {"request": request})
 
 @app.post("/login")
@@ -166,11 +172,6 @@ def register_post(username: str = Form(...), password: str = Form(...), email: s
     if get_user(username):
         return HTMLResponse("<p>El usuario ya existe.</p>", status_code=400)
     create_user(username, password)
-    # notificar a n8n (no bloqueante)
-    try:
-        requests.post(N8N_WEBHOOK_URL, json={"username": username, "email": email}, timeout=3)
-    except Exception as e:
-        print("⚠️ Error notificando a n8n:", e)
     return RedirectResponse("/login", status_code=302)
 
 @app.get("/logout")
@@ -179,94 +180,74 @@ def logout():
     resp.delete_cookie("access_token")
     return resp
 
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    """
-    Ruta pública que redirige al login si no hay sesión válida;
-    si el token es válido, renderiza dashboard.
-    (No lanzamos 401 desde aquí para evitar errores HTTP inesperados al abrir la raíz).
-    """
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse("/login", status_code=302)
-    try:
-        payload = decode_token(token)
-        user = {"username": payload.get("sub"), "rol": payload.get("rol")}
-        # show_upload False por defecto para usuarios normales (el dashboard contiene JS para mostrar)
-        return templates.TemplateResponse("dashboard.html", {"request": request, "user": user, "show_upload": False})
-    except Exception:
-        # token inválido/expirado → redirigir a login (elimina cookie en cliente la próxima vez)
-        return RedirectResponse("/login", status_code=302)
-
-@app.get("/upload-form", response_class=HTMLResponse)
-def upload_form(request: Request, user: dict = Depends(get_current_user_by_request)):
-    """
-    Mostrar dashboard con el formulario visible (ruta usada por la sidebar 'Subir archivo').
-    """
-    return templates.TemplateResponse("dashboard.html", {"request": request, "user": user, "show_upload": True})
+# ---------- INTEGRACIÓN CON N8N (NUEVO FLUJO) ----------
+@app.get("/upload", response_class=HTMLResponse)
+def upload_page(request: Request, user: dict = Depends(get_current_user_by_request)):
+    return templates.TemplateResponse("upload.html", {"request": request, "user": user, "text": None, "category": None})
 
 @app.post("/upload", response_class=HTMLResponse)
-async def upload(request: Request, file: UploadFile = File(...), user: dict = Depends(get_current_user_by_request)):
-    """
-    Recibe archivo, llama OCR y classifier, guarda en MinIO y en la BD
-    y reusa dashboard.html para mostrar resultado.
-    """
+async def upload_file(request: Request, file: UploadFile = File(...), user: dict = Depends(get_current_user_by_request)):
     try:
+        # 1. Leer el archivo
         file_bytes = await file.read()
-        files = {"file": (file.filename, file_bytes, file.content_type)}
+        
+        # 2. Enviar a n8n (WebHook)
+        # Usamos 'data' como key porque así se configuró en el Webhook de n8n
+        files = {'data': (file.filename, file_bytes, file.content_type)}
+        
+        print(f"🚀 Enviando archivo {file.filename} a n8n ({N8N_WEBHOOK_URL})...")
+        
+        # Enviamos la petición POST a n8n
+        response = requests.post(N8N_WEBHOOK_URL, files=files, timeout=600)
+        
+        if not response.ok:
+            return HTMLResponse(f"<p>Error en n8n: {response.status_code} - {response.text}</p>", status_code=500)
+        
+        # 3. Procesar respuesta JSON de n8n
+        n8n_result = response.json()
+        
+        # Extraemos los datos que nos devuelve el nodo 'Respond to Webhook'
+        status = n8n_result.get("status", "unknown")
+        categoria = n8n_result.get("final_category", "Desconocido")
+        confianza_smav = n8n_result.get("smav_confidence", "N/A")
+        mensaje = n8n_result.get("message", "")
+        archivo_txt = n8n_result.get("classified_file_minio", "")
 
-        # OCR (intentamos, si falla seguimos)
-        try:
-            ocr_resp = requests.post(OCR_URL, files=files, timeout=12)
-            extracted_text = ocr_resp.json().get("extracted_text", "")
-        except Exception as e:
-            print("⚠️ OCR error:", e)
-            extracted_text = ""
+        # Construimos un texto de resumen para guardar en la BD local y mostrar en pantalla
+        resumen_proceso = (
+            f"✅ Procesado por n8n.\n"
+            f"Categoría: {categoria}\n"
+            f"Confianza SMAV: {confianza_smav}\n"
+            f"Archivo TXT: {archivo_txt}\n"
+            f"Mensaje: {mensaje}"
+        )
 
-        # CLASSIFIER (intentamos)
-        try:
-            cls_resp = requests.post(CLASSIFIER_URL, json={"text": extracted_text}, timeout=8)
-            classifier_json = cls_resp.json() if cls_resp.ok else {}
-            category = classifier_json.get("categoria") or classifier_json.get("category") or "Desconocido"
-        except Exception as e:
-            print("⚠️ CLASSIFIER error:", e)
-            category = "Desconocido"
-
-        # Guardar en MinIO (no interrumpimos si falla)
-        try:
-            MINIO_CLIENT.put_object("incoming-docs", f"{user['username']}/{file.filename}",
-                                    io.BytesIO(file_bytes), length=len(file_bytes), content_type=file.content_type)
-            text_bytes = extracted_text.encode("utf-8")
-            classified_name = f"{category}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            MINIO_CLIENT.put_object("classified-docs", f"{user['username']}/{classified_name}",
-                                    io.BytesIO(text_bytes), length=len(text_bytes), content_type="text/plain")
-        except Exception as e:
-            print("⚠️ MinIO put_object error:", e)
-
-        # Guardar registro en BD (no interrumpimos la vista si falla)
+        # 4. Guardar Historial en PostgreSQL (Frontend DB)
+        # Aunque n8n guarda archivos, nosotros guardamos el registro de quién lo subió
         try:
             conn = get_db_conn()
             cur = conn.cursor()
             cur.execute("INSERT INTO clasificaciones (texto, categoria, fecha, username) VALUES (%s,%s,%s,%s)",
-                        (extracted_text[:500], category, datetime.now(), user["username"]))
+                        (resumen_proceso, categoria, datetime.now(), user["username"]))
             conn.commit()
             cur.close()
             conn.close()
         except Exception as e:
-            print("⚠️ DB insert clasificacion error:", e)
+            print("⚠️ Error guardando en BD local:", e)
 
-        # Reusar dashboard para mostrar resultado (evita depender de result.html)
-        return templates.TemplateResponse("dashboard.html", {
+        # 5. Mostrar resultado al usuario
+        return templates.TemplateResponse("upload.html", {
             "request": request,
             "user": user,
-            "show_upload": True,
-            "text": extracted_text,
-            "category": category
+            "result": resumen_proceso,
+            "category": categoria
         })
+
     except Exception as e:
         print("Upload flow error:", traceback.format_exc())
         return HTMLResponse(f"<p>Error procesando el archivo: {e}</p>", status_code=500)
 
+# ---------- HISTORIAL ----------
 @app.get("/history", response_class=HTMLResponse)
 def history(request: Request, user: dict = Depends(get_current_user_by_request)):
     rows = []
@@ -284,12 +265,12 @@ def history(request: Request, user: dict = Depends(get_current_user_by_request))
         print("⚠️ history error:", e)
     return templates.TemplateResponse("history.html", {"request": request, "rows": rows, "user": user})
 
+# ---------- ADMIN ----------
 @app.get("/admin", response_class=HTMLResponse)
 def admin_panel(request: Request, user: dict = Depends(get_current_user_by_request)):
     if user["rol"] != "admin":
         raise HTTPException(status_code=403, detail="No autorizado")
-    users = []
-    stats = []
+    users, stats = [], []
     try:
         conn = get_db_conn()
         cur = conn.cursor()
@@ -319,7 +300,7 @@ def admin_stats(user: dict = Depends(get_current_user_by_request)):
         print("⚠️ admin_stats error:", e)
     return JSONResponse(stats)
 
-# Si arrancas directamente (no necesario dentro de Docker Compose)
+# ---------- Arranque ----------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 5000)))

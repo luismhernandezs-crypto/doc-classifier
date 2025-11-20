@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="text-center py-20 max-w-3xl mx-auto">
+  <h1 class="text-4xl font-bold mb-6 text-[#5865f2]">👁️ Bienvenido a SMAV OCR & Classifier</h1>
+  <p class="text-lg text-gray-300 mb-8">
+    Este sistema te permite subir documentos, extraer su texto mediante OCR y clasificarlos automáticamente
+    utilizando modelos de aprendizaje automático. Está diseñado para académicos y profesionales que
+    necesitan gestionar información documental de manera eficiente y segura.
+  </p>
+
+  {% if not user %}
+    <div class="space-x-4">
+      <a href="/login" class="bg-[#5865f2] px-6 py-2 rounded hover:bg-[#4752c4]">Iniciar sesión</a>
+      <a href="/register" class="bg-[#2b2d31] px-6 py-2 rounded hover:bg-[#1e1f22] border border-gray-600">Registrarse</a>
+    </div>
+  {% else %}
+    <p class="text-gray-400 text-lg">
+      Has iniciado sesión como <strong>{{ user.username }}</strong>.  
+      Usa la barra lateral para acceder a tus funciones.
+    </p>
+  {% endif %}
+</div>
+{% endblock %}

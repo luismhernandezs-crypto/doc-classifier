@@ -1,57 +1,32 @@
 {% extends "base.html" %}
 
 {% block content %}
-  <h1 class="text-2xl font-bold mb-6">
-    Bienvenido, {{ user.username }} ({{ user.rol }})
-  </h1>
+  <h1 class="text-2xl font-bold mb-6">📤 Subir archivo</h1>
 
-  {% if user.rol != "admin" %}
-    <!-- Usuario normal: descripción inicial -->
-    <p class="text-gray-300 mb-4">
-      Este sistema permite subir documentos, extraer texto mediante OCR y clasificarlos automáticamente.
-    </p>
+  <p class="text-gray-300 mb-6">
+    Sube un documento para extraer su texto mediante OCR y clasificarlo automáticamente.
+  </p>
 
-    <button
-      id="show-upload-btn"
-      class="bg-[#5865f2] px-4 py-2 rounded hover:bg-[#4752c4] mb-4">
-      Subir archivo
-    </button>
-  {% endif %}
+  <div class="bg-[#1e1f22] p-6 rounded-md max-w-2xl">
+    {% if text %}
+      <div class="mb-4">
+        <h3 class="font-semibold mb-2">Resultado del OCR</h3>
+        <pre class="p-3 bg-[#2b2d31] rounded text-sm whitespace-pre-wrap">{{ text }}</pre>
+        <p class="mt-2">Categoría: <strong>{{ category }}</strong></p>
+      </div>
+    {% endif %}
 
-  <!-- Formulario de subida, oculto inicialmente para usuarios normales -->
-  <form
-    id="upload-form"
-    action="/upload"
-    enctype="multipart/form-data"
-    method="post"
-    class="space-y-4"
-    {% if user.rol != "admin" %}style="display:none;"{% endif %}>
-    
-    <input
-      type="file"
-      name="file"
-      accept="image/*,.pdf"
-      required
-      class="block p-2 bg-[#1e1f22] rounded">
-
-    <button
-      type="submit"
-      class="bg-[#5865f2] px-4 py-2 rounded hover:bg-[#4752c4]">
-      Procesar archivo
-    </button>
-  </form>
-
-  <script>
-    // Mostrar el formulario al hacer clic en el botón para usuarios normales
-    document.addEventListener("DOMContentLoaded", function() {
-      const btn = document.getElementById("show-upload-btn");
-      const form = document.getElementById("upload-form");
-      if (btn) {
-        btn.addEventListener("click", () => {
-          form.style.display = "block";
-          btn.style.display = "none"; // Ocultar el botón después de mostrar el formulario
-        });
-      }
-    });
-  </script>
+    <form action="/upload" enctype="multipart/form-data" method="post" class="space-y-4">
+      <input type="file" name="file" accept="image/*,.pdf" required
+             class="block p-2 bg-[#2b2d31] rounded w-full border border-gray-600">
+      <div class="flex gap-2">
+        <button type="submit" class="bg-[#5865f2] px-4 py-2 rounded hover:bg-[#4752c4]">
+          Procesar archivo
+        </button>
+        <a href="/" class="px-4 py-2 rounded bg-[#2b2d31] border border-gray-600 hover:bg-[#3a3b3f]">
+          Volver
+        </a>
+      </div>
+    </form>
+  </div>
 {% endblock %}
