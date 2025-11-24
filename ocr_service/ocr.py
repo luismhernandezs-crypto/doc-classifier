@@ -14,18 +14,14 @@ def read_root():
 @app.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
     try:
-        # Leer archivo y su nombre
         file_bytes = await file.read()
         filename = file.filename.lower()
 
-        # Verificar tipo de archivo
         if filename.endswith((".jpg", ".jpeg", ".png", ".tiff", ".bmp")):
-            # 🖼️Procesar imagen directamente
             image = Image.open(io.BytesIO(file_bytes))
             text = pytesseract.image_to_string(image)
 
         elif filename.endswith(".pdf"):
-            #  Convertir PDF a imágenes y procesar cada página
             images = convert_from_bytes(file_bytes)
             text = ""
             for i, img in enumerate(images):
@@ -33,7 +29,6 @@ async def extract_text(file: UploadFile = File(...)):
                 text += f"\n--- Página {i + 1} ---\n{page_text}"
 
         else:
-            #  Tipo de archivo no compatible
             return JSONResponse(
                 content={"error": "Formato no compatible. Solo se aceptan JPG, PNG, TIFF, BMP y PDF."},
                 status_code=400
