@@ -24,7 +24,6 @@ from metrics import (
     DASHBOARD_RENDER_TIME,
 )
 
-# ---------------- CONFIGURACIÓN ----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("frontend")
 
@@ -69,7 +68,7 @@ for bucket in ["incoming-docs", "classified-docs"]:
     except Exception as e:
         logger.warning(f"Bucket '{bucket}' no creado: {e}")
 
-# ---------------- DB ----------------
+
 def get_db_conn():
     return psycopg2.connect(**DB_CONFIG)
 
@@ -114,7 +113,6 @@ for _ in range(8):
     except Exception:
         time.sleep(2)
 
-# ---------------- AUTH ----------------
 def create_token(username, rol):
     exp = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {"sub": username, "rol": rol, "exp": exp}
@@ -156,7 +154,6 @@ def get_current_user_by_request(request: Request):
     payload = decode_token(token)
     return {"username": payload.get("sub"), "rol": payload.get("rol")}
 
-# ---------------- RUTAS ----------------
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     start = time.time()
@@ -232,7 +229,7 @@ def logout():
     resp.delete_cookie("access_token", path="/")
     return resp
 
-# ---------- Predict ----------
+
 @app.post("/predict")
 def predict_text(text: str = Form(...), user: dict = Depends(get_current_user_by_request)):
     try:
@@ -250,7 +247,6 @@ def predict_text(text: str = Form(...), user: dict = Depends(get_current_user_by
         logger.exception("predict error: %s", e)
         return JSONResponse({"error": "Error interno clasificando"}, status_code=500)
 
-# ---------- Upload & SMAV Integration ----------
 @app.get("/upload", response_class=HTMLResponse)
 def upload_page(request: Request, user: dict = Depends(get_current_user_by_request)):
     return templates.TemplateResponse("upload.html", {"request": request, "user": user, "text": None, "category": None})
@@ -294,10 +290,6 @@ async def upload_file(request: Request, file: UploadFile = File(...), user: dict
             logger.exception("Error calling classifier service: %s", e)
             classifier_pred = None
 
-        # Define ground_truth: usamos classifier_pred (puedes cambiar la lógica si quieres)
-        ground_truth = classifier_pred
-
-        # Guardar en DB con campos extendidos (smav_pred, classifier_pred, ground_truth, confidence)
         try:
             conn = get_db_conn()
             cur = conn.cursor()
@@ -341,7 +333,6 @@ async def upload_file(request: Request, file: UploadFile = File(...), user: dict
         logger.exception("Upload flow error: %s", e)
         return HTMLResponse(f"<p>Error procesando el archivo: {e}</p>", status_code=500)
 
-# ---------- HISTORIAL ----------
 @app.get("/history", response_class=HTMLResponse)
 def history(request: Request, user: dict = Depends(get_current_user_by_request)):
     rows = []
@@ -360,7 +351,6 @@ def history(request: Request, user: dict = Depends(get_current_user_by_request))
         logger.exception("history error: %s", e)
     return templates.TemplateResponse("history.html", {"request": request, "rows": rows, "user": user})
 
-# ---------- ADMIN ----------
 @app.get("/admin", response_class=HTMLResponse)
 def admin_panel(request: Request, user: dict = Depends(get_current_user_by_request)):
     if user["rol"] != "admin":
@@ -397,7 +387,6 @@ def admin_stats(user: dict = Depends(get_current_user_by_request)):
         logger.exception("admin_stats error: %s", e)
     return JSONResponse(stats)
 
-# ---------- MÉTRICAS GLOBALES (SOLO ADMIN) ----------
 @app.get("/admin/metrics", response_class=HTMLResponse)
 def admin_metrics(request: Request, user: dict = Depends(get_current_user_by_request)):
     FRONTEND_VISITS.inc()
@@ -459,7 +448,6 @@ def admin_metrics(request: Request, user: dict = Depends(get_current_user_by_req
         except Exception as e:
             prometheus_error = f"ERROR obteniendo métricas de SMAV: {e}"
 
-        # -------- PARSEADOR ROBUSTO --------
         metrics_list = []
 
         if prometheus_raw:
@@ -502,7 +490,7 @@ def admin_metrics(request: Request, user: dict = Depends(get_current_user_by_req
                             "type": type_map.get(metric_name, "")
                         })
 
-        # -------- RESPUESTA --------
+
         return templates.TemplateResponse("metrics.html", {
             "request": request,
             "user": user,
@@ -520,7 +508,6 @@ def admin_metrics(request: Request, user: dict = Depends(get_current_user_by_req
         logger.exception("admin_metrics error: %s", e)
         return HTMLResponse("<p>Error obteniendo métricas</p>", status_code=500)
 
-# ---------- MÉTRICAS DE DOCUMENTOS SUBIDOS ----------
 @app.get("/admin/metrics/uploaded-documents", response_class=HTMLResponse)
 def metrics_uploaded_documents(request: Request, user: dict = Depends(get_current_user_by_request)):
     if user["rol"] != "admin":
@@ -551,7 +538,6 @@ def metrics_uploaded_documents(request: Request, user: dict = Depends(get_curren
         if not true_labels:
             return HTMLResponse("<p>No hay pares ground-truth / smav_pred válidos para calcular métricas.</p>", status_code=400)
 
-        # Calcular métricas
         all_labels = sorted(list(set(true_labels) | set(predicted_labels)))
         precision, recall, fscore, support = precision_recall_fscore_support(
             true_labels, predicted_labels, labels=all_labels, zero_division=0
@@ -596,7 +582,6 @@ def metrics_uploaded_documents(request: Request, user: dict = Depends(get_curren
         logger.exception("Error calculando métricas: %s", e)
         return HTMLResponse("<p>Error al calcular las métricas.</p>", status_code=500)
 
-# ---------- Arranque ----------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
