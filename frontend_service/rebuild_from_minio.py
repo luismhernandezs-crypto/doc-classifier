@@ -9,7 +9,6 @@ from minio import Minio
 from psycopg2.extras import RealDictCursor
 from preprocess import clean_text
 
-# Config (usa las mismas env vars de docker-compose; ajusta si hace falta)
 MINIO_ENDPOINT = os.getenv("MINIO_HOST", "minio:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "admin")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "admin123")
@@ -64,7 +63,6 @@ def process_object(obj_name):
     content = data.read()
     data.close()
 
-    # Send to OCR service (preferible) OR to SMAV /process-document
     try:
         resp = requests.post(OCR_URL, files={"file": (obj_name, content)}, timeout=60)
         if resp.ok:
@@ -77,7 +75,6 @@ def process_object(obj_name):
         print("OCR exception:", e)
         texto = ""
 
-    # Call SMAV classifier (or call local SMAV classify endpoint)
     smav_categoria = None
     smav_conf = None
     try:
@@ -91,7 +88,6 @@ def process_object(obj_name):
     except Exception as e:
         print("SMAV classify exception:", e)
 
-    # Call external classifier (we'll treat it as ground truth)
     classifier_pred = None
     try:
         if texto:
@@ -102,7 +98,6 @@ def process_object(obj_name):
     except Exception as e:
         print("Classifier exception:", e)
 
-    # Save into DB
     try:
         conn = get_db_conn()
         cur = conn.cursor()
@@ -119,7 +114,6 @@ def process_object(obj_name):
 
 def main():
     ensure_table()
-    # iterate objects in bucket
     for obj in minio_client.list_objects(BUCKET, recursive=True):
         try:
             process_object(obj.object_name)
