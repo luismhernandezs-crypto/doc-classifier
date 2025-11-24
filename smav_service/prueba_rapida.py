@@ -2,7 +2,6 @@ import joblib
 from preprocess import clean_text
 import numpy as np
 
-# 1. Cargar el modelo local (el que creemos que es Einstein)
 print("Cargando modelo local...")
 modelo = joblib.load("model.pkl")
 
