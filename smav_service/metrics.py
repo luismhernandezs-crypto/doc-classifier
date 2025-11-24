@@ -2,9 +2,7 @@
 from prometheus_client import Counter, Histogram, Gauge
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-# ============================================================
-# MÉTRICAS SMAV - PREFIJO "smav_" PARA EVITAR COLISIONES
-# ============================================================
+
 
 DOCUMENTS_CLASSIFIED = Counter(
     "smav_documents_classified_total",
@@ -27,9 +25,8 @@ OCR_ERRORS = Counter(
     "Errores ocurridos durante OCR"
 )
 
-# ============================================================
 # MÉTRICAS ML (GAUGES)
-# ============================================================
+
 ML_ACCURACY = Gauge(
     "smav_ml_accuracy",
     "Exactitud global del modelo"
@@ -50,9 +47,7 @@ ML_F1 = Gauge(
     "F1-score macro promedio"
 )
 
-# ============================================================
-# ACTUALIZACIÓN DE MÉTRICAS DE ML
-# ============================================================
+
 def update_ml_metrics(true_labels, predicted_labels):
     """
     - true_labels: etiquetas reales guardadas en DB
