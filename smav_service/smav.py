@@ -3,13 +3,12 @@ import os
 import io
 import joblib
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse, Response
-from minio import Minio
-from fastapi.responses import JSONResponse, FileResponse, Response
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse, FileResponse, Response
+from minio import Minio
 from preprocess import clean_text
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from metrics import (
@@ -22,11 +21,15 @@ from metrics import (
 
 app = FastAPI(title="SMAV - Processor & Classifier")
 
-# Load model
+# ---------------------------------------------------------
+# LOAD MODEL
+# ---------------------------------------------------------
 MODEL_PATH = os.getenv("MODEL_PATH", "model/model.pkl")
 modelo = joblib.load(MODEL_PATH)
 
-# Environment config
+# ---------------------------------------------------------
+# ENVIRONMENT CONFIG
+# ---------------------------------------------------------
 OCR_URL = os.getenv("OCR_URL", "http://ocr_service:8000/extract-text")
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
@@ -48,6 +51,9 @@ DB_CONFIG = {
     "password": POSTGRES_PASSWORD,
 }
 
+# ---------------------------------------------------------
+# MINIO CLIENT
+# ---------------------------------------------------------
 minio_client = Minio(
     MINIO_ENDPOINT.replace("http://", "").replace("https://", ""),
     access_key=MINIO_ACCESS_KEY,
@@ -63,14 +69,14 @@ for b in (BUCKET_INCOMING, BUCKET_CLASSIFIED):
     except Exception as e:
         print(f"Could not ensure bucket {b}: {e}")
 
-
 # ---------------------------------------------------------
-# DB Save function
+# DATABASE SAVE FUNCTION
 # ---------------------------------------------------------
 def save_record_db(text, categoria):
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS clasificaciones (
                 id SERIAL PRIMARY KEY,
@@ -79,24 +85,25 @@ def save_record_db(text, categoria):
                 fecha TIMESTAMP DEFAULT NOW()
             )
         """)
+
         cur.execute(
-            "INSERT INTO clasificaciones (texto, categoria) VALUES (%s,%s)",
+            "INSERT INTO clasificaciones (texto, categoria) VALUES (%s, %s)",
             (text[:10000], categoria),
         )
+
         conn.commit()
         cur.close()
         conn.close()
+
     except Exception as e:
         print("DB save error:", e)
 
-
 # ---------------------------------------------------------
-# Root endpoint
+# ROOT ENDPOINT
 # ---------------------------------------------------------
 @app.get("/")
 def root():
     return {"message": "SMAV processor running"}
-
 
 # ---------------------------------------------------------
 # TEXT CLASSIFICATION
@@ -113,26 +120,22 @@ async def classify_text_endpoint(payload: dict):
 
     return {"categoria": categoria, "confianza": confianza}
 
-
 # ---------------------------------------------------------
-# PROCESS DOCUMENTS
+# MODEL DOWNLOAD
 # ---------------------------------------------------------
-
-# Ruta para servir el modelo
 @app.get("/model")
 async def get_model():
-    model_path = "model.pkl"  # La ubicación del archivo del modelo
+    model_path = "model.pkl"
     if os.path.exists(model_path):
         return FileResponse(model_path, media_type="application/octet-stream", filename="model.pkl")
     else:
         return Response(content="Modelo no encontrado", status_code=404)
 
 # ---------------------------------------------------------
-# NEW: GLOBAL METRICS ENDPOINT (admin-only via gateway)
+# PROCESS DOCUMENT
 # ---------------------------------------------------------
 @app.post("/process-document")
 async def process_document(file: UploadFile = File(...)):
-    # Medir tiempo total del procesamiento + clasificación
     with CLASSIFICATION_TIME.time():
 
         file_bytes = await file.read()
@@ -142,7 +145,7 @@ async def process_document(file: UploadFile = File(...)):
         try:
             minio_client.put_object(
                 BUCKET_INCOMING,
-                f"{filename}",
+                filename,
                 data=io.BytesIO(file_bytes),
                 length=len(file_bytes),
                 content_type=file.content_type or "application/octet-stream",
@@ -177,11 +180,11 @@ async def process_document(file: UploadFile = File(...)):
             probas = modelo.predict_proba([text_clean])[0]
             confianza = float(np.max(probas))
 
-        # MÉTRICAS SMAV
+        # Metrics
         DOCUMENTS_CLASSIFIED.inc()
         CATEGORY_COUNT.labels(categoria=categoria).inc()
 
-        # Build TXT for classified output
+        # Build TXT result
         contenido = (
             f"=== DOCUMENTO CLASIFICADO ===\n"
             f"Archivo original: {filename}\n"
@@ -190,10 +193,10 @@ async def process_document(file: UploadFile = File(...)):
             f"--- TEXTO EXTRAIDO ---\n{extracted_text}"
         )
 
-        classified_name = f"{categoria.replace(' ','_')}_{int(__import__('time').time())}.txt"
+        classified_name = f"{categoria.replace(' ', '_')}_{int(__import__('time').time())}.txt"
         classified_bytes = contenido.encode("utf-8")
 
-        # Upload classified file
+        # Upload classified
         try:
             minio_client.put_object(
                 BUCKET_CLASSIFIED,
@@ -206,13 +209,12 @@ async def process_document(file: UploadFile = File(...)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"MinIO upload classified error: {e}")
 
-        # Save DB record
+        # Save DB
         try:
             save_record_db(extracted_text, categoria)
         except Exception as e:
             print("DB save failed:", e)
 
-        # Final response
         return JSONResponse(
             content={
                 "status": "success",
@@ -225,22 +227,16 @@ async def process_document(file: UploadFile = File(...)):
             }
         )
 
-
-
+# ---------------------------------------------------------
+# GLOBAL METRICS
+# ---------------------------------------------------------
 @app.get("/metrics/global")
 def get_global_metrics():
-    """
-    Endpoint que retorna métricas globales del sistema:
-    - Conteo por categoría
-    - Promedio de longitud de texto
-    - Últimos 20 registros
-    Además actualiza los gauges de Prometheus: accuracy, f1, precision, recall
-    """
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Obtener todos los registros
+        # All rows
         cur.execute("""
             SELECT categoria AS true_label, texto
             FROM clasificaciones
@@ -248,7 +244,7 @@ def get_global_metrics():
         """)
         rows = cur.fetchall()
 
-        # Conteo por categoría
+        # Count per category
         cur.execute("""
             SELECT categoria, COUNT(*) AS cantidad
             FROM clasificaciones
@@ -257,14 +253,14 @@ def get_global_metrics():
         """)
         conteo_por_categoria = cur.fetchall()
 
-        # Promedio de longitud de texto
+        # Average text length
         cur.execute("""
             SELECT AVG(LENGTH(texto)) AS promedio_longitud
             FROM clasificaciones
         """)
         promedio_longitud = cur.fetchone()["promedio_longitud"]
 
-        # Últimos 20 registros
+        # Last 20
         cur.execute("""
             SELECT id, categoria, fecha, LENGTH(texto) AS longitud
             FROM clasificaciones
@@ -276,10 +272,12 @@ def get_global_metrics():
         cur.close()
         conn.close()
 
-        # ---------------- ACTUALIZAR METRICAS ML ----------------
+        # ML METRICS
+        true_labels = []
+        predicted_labels = []
+
         if rows:
             true_labels = [r["true_label"] for r in rows]
-            predicted_labels = []
 
             for r in rows:
                 text_clean = clean_text(r["texto"])
@@ -289,10 +287,8 @@ def get_global_metrics():
                     pred = "Desconocido"
                 predicted_labels.append(pred)
 
-            # Actualiza gauges de Prometheus
-            update_ml_metrics(true_labels, predicted_labels)
+        update_ml_metrics(true_labels, predicted_labels)
 
-        # ---------------- CONSTRUIR RESPUESTA ----------------
         return {
             "total_registros": len(rows),
             "conteo_por_categoria": conteo_por_categoria,
@@ -303,19 +299,10 @@ def get_global_metrics():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB metrics error: {e}")
 
-#METRICS
+# ---------------------------------------------------------
+# PROMETHEUS METRICS
+# ---------------------------------------------------------
 @app.get("/metrics")
 def metrics():
-    """
-    Endpoint oficial de Prometheus.
-    Exporta todas las métricas registradas:
-    - accuracy
-    - precision
-    - recall
-    - f1
-    - número de documentos procesados
-    - tiempo por clasificación
-    - etc.
-    """
     data = generate_latest()
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)

@@ -1,43 +1,83 @@
-# metrics.py (smav_service)
-from prometheus_client import start_http_server, Counter, Gauge, Histogram
+# smav_service/metrics.py
+from prometheus_client import Counter, Histogram, Gauge
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-# Contadores
+# ============================================================
+# MÉTRICAS SMAV - PREFIJO "smav_" PARA EVITAR COLISIONES
+# ============================================================
+
 DOCUMENTS_CLASSIFIED = Counter(
     "smav_documents_classified_total",
-    "Total de documentos clasificados por SMAV"
+    "Número de documentos procesados y clasificados por el SMAV"
+)
+
+CATEGORY_COUNT = Counter(
+    "smav_category_count_total",
+    "Conteo por categoría clasificada",
+    ["categoria"]
+)
+
+CLASSIFICATION_TIME = Histogram(
+    "smav_classification_time_seconds",
+    "Tiempo total de clasificación por documento"
 )
 
 OCR_ERRORS = Counter(
     "smav_ocr_errors_total",
-    "Errores ocurridos durante el OCR"
+    "Errores ocurridos durante OCR"
 )
 
-CATEGORY_COUNT = Counter(
-    "smav_category_total",
-    "Cantidad de documentos clasificados por categoría",
-    ["categoria"]
+# ============================================================
+# MÉTRICAS ML (GAUGES)
+# ============================================================
+ML_ACCURACY = Gauge(
+    "smav_ml_accuracy",
+    "Exactitud global del modelo"
 )
 
-# Tiempo de clasificación
-CLASSIFICATION_TIME = Histogram(
-    "smav_classification_seconds",
-    "Tiempo que tarda en clasificar un documento"
+ML_PRECISION = Gauge(
+    "smav_ml_precision",
+    "Precisión macro promedio"
 )
 
-# Métricas de desempeño ML
-ACCURACY = Gauge("smav_model_accuracy", "Accuracy del modelo")
-F1_SCORE = Gauge("smav_model_f1_score", "F1 Score del modelo")
-PRECISION = Gauge("smav_model_precision", "Precision del modelo")
-RECALL = Gauge("smav_model_recall", "Recall del modelo")
+ML_RECALL = Gauge(
+    "smav_ml_recall",
+    "Recall macro promedio"
+)
 
+ML_F1 = Gauge(
+    "smav_ml_f1",
+    "F1-score macro promedio"
+)
 
-
-
+# ============================================================
+# ACTUALIZACIÓN DE MÉTRICAS DE ML
+# ============================================================
 def update_ml_metrics(true_labels, predicted_labels):
-    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-    ACCURACY.set(accuracy_score(true_labels, predicted_labels))
-    F1_SCORE.set(f1_score(true_labels, predicted_labels, average="macro"))
-    PRECISION.set(precision_score(true_labels, predicted_labels, average="macro"))
-    RECALL.set(recall_score(true_labels, predicted_labels, average="macro"))
+    """
+    - true_labels: etiquetas reales guardadas en DB
+    - predicted_labels: predicciones del modelo (text_clean)
+    """
+    if (
+        not true_labels
+        or not predicted_labels
+        or len(true_labels) != len(predicted_labels)
+    ):
+        print("ML Metrics skipped: labels vacías o desbalanceadas")
+        return
 
+    try:
+        acc = accuracy_score(true_labels, predicted_labels)
+        prec = precision_score(true_labels, predicted_labels, average="macro", zero_division=0)
+        rec = recall_score(true_labels, predicted_labels, average="macro", zero_division=0)
+        f1 = f1_score(true_labels, predicted_labels, average="macro", zero_division=0)
 
+        ML_ACCURACY.set(float(acc))
+        ML_PRECISION.set(float(prec))
+        ML_RECALL.set(float(rec))
+        ML_F1.set(float(f1))
+
+        print(f"ML Metrics updated: ACC={acc:.3f}, F1={f1:.3f}")
+
+    except Exception as e:
+        print("Error actualizando métricas ML:", e)
