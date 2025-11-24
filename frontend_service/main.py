@@ -268,32 +268,72 @@ async def upload_file(request: Request, file: UploadFile = File(...), user: dict
             return HTMLResponse(f"<p>Error en SMAV: {response.status_code} - {response.text}</p>", status_code=500)
         smav_result = response.json()
         texto_ocr = smav_result.get("extracted_text", "")
-        categoria = smav_result.get("final_category", "Desconocido")
-        confianza_smav = smav_result.get("smav_confidence", "N/A")
+        smav_categoria = smav_result.get("final_category", "Desconocido")
+        confianza_smav = smav_result.get("smav_confidence", None)
         archivo_txt = smav_result.get("classified_file_minio", "")
         resumen_proceso = (
             f"Procesado por SMAV.\n"
-            f"Categoría: {categoria}\n"
+            f"Categoría: {smav_categoria}\n"
             f"Confianza SMAV: {confianza_smav}\n"
             f"Archivo TXT: {archivo_txt}\n"
             f"Mensaje: {smav_result.get('status','')}"
         )
+
+        # --- CALL classifier_service to obtain classifier_pred (we'll use it as ground_truth) ---
+        classifier_pred = None
+        try:
+            if texto_ocr:
+                resp = requests.post(CLASSIFIER_URL, json={"text": texto_ocr}, timeout=10)
+                if resp.ok:
+                    j = resp.json()
+                    # Ajusta la clave si tu classifier devuelve otra (categoria, label, etc.)
+                    classifier_pred = j.get("categoria") or j.get("category") or j.get("label") or None
+                else:
+                    logger.warning(f"Classifier returned non-OK: {resp.status_code}")
+        except Exception as e:
+            logger.exception("Error calling classifier service: %s", e)
+            classifier_pred = None
+
+        # Define ground_truth: usamos classifier_pred (puedes cambiar la lógica si quieres)
+        ground_truth = classifier_pred
+
+        # Guardar en DB con campos extendidos (smav_pred, classifier_pred, ground_truth, confidence)
         try:
             conn = get_db_conn()
             cur = conn.cursor()
-            cur.execute("INSERT INTO clasificaciones (texto, categoria, fecha, username) VALUES (%s,%s,%s,%s)",
-                        (resumen_proceso, categoria, datetime.now(), user["username"]))
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS clasificaciones (
+                    id SERIAL PRIMARY KEY,
+                    texto TEXT,
+                    categoria VARCHAR(255),
+                    fecha TIMESTAMP DEFAULT NOW(),
+                    username VARCHAR(100),
+                    smav_pred VARCHAR(255),
+                    classifier_pred VARCHAR(255),
+                    ground_truth VARCHAR(255),
+                    confidence NUMERIC
+                );
+            """)
+            cur.execute(
+                """
+                INSERT INTO clasificaciones
+                (texto, categoria, fecha, username, smav_pred, classifier_pred, ground_truth, confidence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (resumen_proceso, smav_categoria, datetime.now(), user["username"], smav_categoria, classifier_pred, ground_truth, confianza_smav)
+            )
             conn.commit()
             cur.close()
             conn.close()
         except Exception as e:
             logger.exception("Error guardando en BD local: %s", e)
+
         DASHBOARD_RENDER_TIME.observe(time.time() - start)
         return templates.TemplateResponse("upload.html", {
             "request": request,
             "user": user,
             "result": resumen_proceso,
-            "category": categoria,
+            "category": smav_categoria,
             "texto_ocr": texto_ocr
         })
     except Exception as e:
@@ -488,7 +528,8 @@ def metrics_uploaded_documents(request: Request, user: dict = Depends(get_curren
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT categoria, texto FROM clasificaciones;")
+        # Traemos las columnas que necesitamos
+        cur.execute("SELECT smav_pred, ground_truth FROM clasificaciones;")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -498,24 +539,19 @@ def metrics_uploaded_documents(request: Request, user: dict = Depends(get_curren
 
         true_labels = []
         predicted_labels = []
-        smav_classify_url = os.getenv("SMAV_CLASSIFY_URL", "http://smav_service:8000/classify-text")
 
-        for row in rows:
-            true_cat = row[0]
-            text = row[1] or ""
-            true_labels.append(true_cat)
-            try:
-                resp = requests.post(smav_classify_url, json={"text": text}, timeout=10)
-                if resp.ok:
-                    j = resp.json()
-                    predicted_labels.append(j.get("categoria") or "Desconocido")
-                else:
-                    predicted_labels.append("Error")
-            except Exception as e:
-                FRONTEND_ERRORS.inc()
-                logger.exception("Error conectando a SMAV para predicción: %s", e)
-                predicted_labels.append("Error")
+        for r in rows:
+            smav_pred = r[0] or None
+            ground = r[1] or None
+            # Añadimos sólo pares válidos
+            if ground and smav_pred:
+                true_labels.append(ground)
+                predicted_labels.append(smav_pred)
 
+        if not true_labels:
+            return HTMLResponse("<p>No hay pares ground-truth / smav_pred válidos para calcular métricas.</p>", status_code=400)
+
+        # Calcular métricas
         all_labels = sorted(list(set(true_labels) | set(predicted_labels)))
         precision, recall, fscore, support = precision_recall_fscore_support(
             true_labels, predicted_labels, labels=all_labels, zero_division=0
