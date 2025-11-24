@@ -8,4 +8,7 @@ passlib==1.7.4
 python-jose[cryptography]
 minio
 jinja2
-
+scikit-learn
+prometheus-client
+matplotlib
+plotly

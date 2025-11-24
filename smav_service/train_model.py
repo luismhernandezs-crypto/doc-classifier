@@ -1,6 +1,7 @@
 # train_model.py - Entrenamiento profesional con dataset real
 import os
 import joblib
+import json
 import numpy as np
 from preprocess import clean_text
 
@@ -44,19 +45,19 @@ def load_dataset(folder):
                     textos.append(contenido)
                     etiquetas.append(categoria)
             except Exception as e:
-                print(f"⚠️ Error leyendo {ruta_archivo}: {e}")
+                print(f"rror leyendo {ruta_archivo}: {e}")
 
     return textos, etiquetas
 
 
-print("📂 Cargando dataset de entrenamiento...")
+print("Cargando dataset de entrenamiento...")
 train_texts, train_labels = load_dataset(os.path.join(DATASET_PATH, "train"))
 
-print("📂 Cargando dataset de prueba (test)...")
+print("Cargando dataset de prueba (test)...")
 test_texts, test_labels = load_dataset(os.path.join(DATASET_PATH, "test"))
 
-print(f"✔ Entrenamiento: {len(train_texts)} documentos")
-print(f"✔ Test: {len(test_texts)} documentos")
+print(f"Entrenamiento: {len(train_texts)} documentos")
+print(f"Test: {len(test_texts)} documentos")
 
 
 # ============================================================
@@ -79,14 +80,14 @@ modelo = Pipeline([
 # ============================================================
 # 3. Entrenamiento del modelo
 # ============================================================
-print("🚀 Entrenando modelo...")
+print("Entrenando modelo...")
 modelo.fit(train_texts, train_labels)
 
 
 # ============================================================
 # 4. Evaluación en TRAIN
 # ============================================================
-print("\n📊 METRICAS (TRAIN SET)")
+print("\nMETRICAS (TRAIN SET)")
 train_pred = modelo.predict(train_texts)
 print(classification_report(train_labels, train_pred))
 
@@ -94,18 +95,31 @@ print(classification_report(train_labels, train_pred))
 # ============================================================
 # 5. Evaluación en TEST (REAL)
 # ============================================================
-print("\n📊 METRICAS (TEST SET)")
+print("\nMETRICAS (TEST SET)")
 test_pred = modelo.predict(test_texts)
 
 print("Accuracy:", accuracy_score(test_labels, test_pred))
 print(classification_report(test_labels, test_pred))
 
-print("\n🧩 Matriz de confusión:")
+print("\nMatriz de confusión:")
 print(confusion_matrix(test_labels, test_pred))
+#josn metricas
+metrics_output = {
+    "accuracy": accuracy_score(test_labels, test_pred),
+    "classification_report": classification_report(test_labels, test_pred, output_dict=True),
+    "confusion_matrix": confusion_matrix(test_labels, test_pred).tolist(),
+    "total_train_docs": len(train_texts),
+    "total_test_docs": len(test_texts),
+    "categories": sorted(set(train_labels))
+}
 
+# Crear carpeta del modelo si no existe
+os.makedirs("model", exist_ok=True)
 
-# ============================================================
-# 6. Guardar modelo final
-# ============================================================
-joblib.dump(modelo, "model.pkl")
-print("\n✅ Modelo final entrenado y guardado como model.pkl")
+# Guardar métricas dentro de smav_service/model/
+with open("model/model_metrics.json", "w", encoding="utf-8") as f:
+    json.dump(metrics_output, f, indent=4, ensure_ascii=False)
+
+# Guardar modelo dentro de smav_service/model/
+joblib.dump(modelo, "model/model.pkl")
+

@@ -1,5 +1,4 @@
 version: "3.9"
-
 services:
   postgres:
     image: postgres:15
@@ -13,6 +12,8 @@ services:
       - "5432:5432"
     volumes:
       - ./postgres:/var/lib/postgresql/data
+    networks:
+      - internal_net
 
   minio:
     image: minio/minio
@@ -26,6 +27,8 @@ services:
       MINIO_ROOT_PASSWORD: admin123
     volumes:
       - ./minio:/data
+    networks:
+      - internal_net
 
   ocr_service:
     build: ./ocr_service
@@ -35,6 +38,32 @@ services:
     depends_on:
       - postgres
       - minio
+    networks:
+      - internal_net
+
+  smav_service:
+    build: ./smav_service
+    container_name: smav_service
+    ports:
+      - "8001:8000"
+    environment:
+      OCR_URL: "http://ocr_service:8000/extract-text"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "admin"
+      MINIO_SECRET_KEY: "admin123"
+      MINIO_BUCKET_INCOMING: "incoming-docs"
+      MINIO_BUCKET_CLASSIFIED: "classified-docs"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: "doc_classifier"
+      POSTGRES_USER: "admin"
+      POSTGRES_PASSWORD: "admin123"
+    depends_on:
+      - ocr_service
+      - minio
+      - postgres
+    networks:
+      - internal_net
 
   classifier_service:
     build: ./classifier_service
@@ -42,49 +71,87 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - ocr_service
+      - smav_service
       - postgres
-
+    networks:
+      - internal_net
 
   frontend_service:
     build: ./frontend_service
     container_name: frontend_service
     ports:
-     - "5000:5000"
+      - "5000:5000"
+    environment:
+      SMAV_PROCESS_URL: "http://smav_service:8000/process-document"
+      N8N_WEBHOOK_URL: "http://n8n:5678/webhook/procesar-documento"
+      MINIO_HOST: "minio:9000"
+      MINIO_ROOT_USER: "admin"
+      MINIO_ROOT_PASSWORD: "admin123"
+      POSTGRES_HOST: "postgres"
+      POSTGRES_DB: "doc_classifier"
+      POSTGRES_USER: "admin"
+      POSTGRES_PASSWORD: "admin123"
     depends_on:
-     - ocr_service
-  smav_service:
-    build: ./smav_service
-    container_name: smav_service
-    ports:
-     - "8090:8090"
-    depends_on:
-     - classifier_service
+      - smav_service
+      - n8n
+      - minio
+      - postgres
+    networks:
+      - internal_net
 
   n8n:
-   image: n8nio/n8n
-   restart: always
-   ports:
-    - "5678:5678"
-   environment:
-    DB_TYPE: postgresdb
-    DB_POSTGRESDB_HOST: postgres
-    DB_POSTGRESDB_PORT: 5432
-    DB_POSTGRESDB_DATABASE: doc_classifier
-    DB_POSTGRESDB_USER: admin
-    DB_POSTGRESDB_PASSWORD: admin123
-    N8N_BASIC_AUTH_ACTIVE: 'true'
-    N8N_BASIC_AUTH_USER: admin@example.com
-    N8N_BASIC_AUTH_PASSWORD: admin123
-    N8N_S3_DISABLE_SSL: 'true'
-   volumes:
-    - ./n8n_data:/home/node/.n8n
-   depends_on:
-    - postgres
+    image: n8nio/n8n
+    container_name: n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: doc_classifier
+      DB_POSTGRESDB_USER: admin
+      DB_POSTGRESDB_PASSWORD: admin123
+      N8N_BASIC_AUTH_ACTIVE: 'true'
+      N8N_BASIC_AUTH_USER: admin@example.com
+      N8N_BASIC_AUTH_PASSWORD: admin123
+      N8N_WEBHOOK_URL: "http://n8n:5678"
+      N8N_EDITOR_BASE_URL: "http://n8n:5678"
+      N8N_S3_DISABLE_SSL: 'true'
+    volumes:
+      - ./n8n_data:/home/node/.n8n
+    depends_on:
+      - postgres
+    networks:
+      - internal_net
 
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    restart: always
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - smav_service
+    networks:
+      - internal_net
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+    depends_on:
+      - prometheus
+    networks:
+      - internal_net
 
 networks:
-  default:
+  internal_net:
     driver: bridge
-
-

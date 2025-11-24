@@ -1,16 +1,36 @@
-# frontend_service/main.py
+# frontend_service/main.py (CORREGIDO)
 from fastapi import FastAPI, UploadFile, File, Form, Request, Depends, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from minio import Minio
-import requests, psycopg2, io, os, traceback
+from prometheus_client import make_asgi_app
+import requests, psycopg2, io, os, traceback, time, logging, re
+from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import base64
+import json
+
+# métricas definidas en frontend_service/metrics.py
+from metrics import (
+    FRONTEND_VISITS,
+    FRONTEND_UPLOADS,
+    FRONTEND_ERRORS,
+    DASHBOARD_RENDER_TIME,
+)
 
 # ---------------- CONFIGURACIÓN ----------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("frontend")
+
 app = FastAPI(title="SMAV OCR & Classifier")
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -20,15 +40,11 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24))
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# NOTA: Estas URLs ya no se usan directamente porque n8n orquesta todo,
-# pero las dejamos por si acaso necesitas depurar servicios individuales.
 OCR_URL = os.getenv("OCR_URL", "http://ocr_service:8000/extract-text")
 CLASSIFIER_URL = os.getenv("CLASSIFIER_URL", "http://classifier_service:8080/classify-text")
-
-# --- CONFIGURACIÓN DE N8N ---
-# IMPORTANTE: Dentro de Docker usamos "http://n8n:5678".
-# Si el workflow está "Active", usa "/webhook/". Si estás probando con el botón "Execute", usa "/webhook-test/".
-# Aquí configuramos la ruta de producción por defecto:
+# Default for container-to-container requests inside Docker network:
+SMAV_METRICS_URL = os.getenv("SMAV_METRICS_URL", "http://smav_service:8000/metrics")
+SMAV_PROCESS_URL = os.getenv("SMAV_PROCESS_URL", "http://smav_service:8000/process-document")
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "http://n8n:5678/webhook/procesar-documento")
 
 DB_CONFIG = {
@@ -39,8 +55,6 @@ DB_CONFIG = {
     "password": os.getenv("POSTGRES_PASSWORD", "admin123")
 }
 
-# MinIO Client (Solo lo usamos aquí para verificar buckets al inicio, 
-# n8n se encarga de subir los archivos ahora)
 MINIO_CLIENT = Minio(
     os.getenv("MINIO_HOST", "minio:9000"),
     access_key=os.getenv("MINIO_ROOT_USER", "admin"),
@@ -53,7 +67,7 @@ for bucket in ["incoming-docs", "classified-docs"]:
         if not MINIO_CLIENT.bucket_exists(bucket):
             MINIO_CLIENT.make_bucket(bucket)
     except Exception as e:
-        print(f"⚠️ Bucket '{bucket}' no creado: {e}")
+        logger.warning(f"Bucket '{bucket}' no creado: {e}")
 
 # ---------------- DB ----------------
 def get_db_conn():
@@ -88,11 +102,17 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Base de datos inicializada correctamente.")
+        logger.info("Base de datos inicializada correctamente.")
     except Exception as e:
-        print("⚠️ Error inicializando la BD:", e)
+        logger.exception("Error inicializando la BD: %s", e)
 
-init_db()
+# Retry init_db a few times (Postgres container might not be ready)
+for _ in range(8):
+    try:
+        init_db()
+        break
+    except Exception:
+        time.sleep(2)
 
 # ---------------- AUTH ----------------
 def create_token(username, rol):
@@ -117,13 +137,13 @@ def get_user(username):
         return {"username": row[0], "password_hash": row[1], "rol": row[2]}
     return None
 
-def create_user(username, password, rol="usuario", email=None):
+def create_user(username, password, rol="usuario"):
     conn = get_db_conn()
     cur = conn.cursor()
     hashed = pwd_context.hash(password)
     cur.execute(
         "INSERT INTO usuarios (username, password_hash, rol) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING;",
-        (username, hashed, rol),
+        (username, hashed, rol)
     )
     conn.commit()
     cur.close()
@@ -139,91 +159,125 @@ def get_current_user_by_request(request: Request):
 # ---------------- RUTAS ----------------
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
+    start = time.time()
+    FRONTEND_VISITS.inc()
+
     token = request.cookies.get("access_token")
     if not token:
         return RedirectResponse("/login", status_code=302)
     try:
         payload = decode_token(token)
         user = {"username": payload.get("sub"), "rol": payload.get("rol")}
+        DASHBOARD_RENDER_TIME.observe(time.time() - start)
         return templates.TemplateResponse("index.html", {"request": request, "user": user})
     except JWTError:
+        FRONTEND_ERRORS.inc()
         return RedirectResponse("/login", status_code=302)
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
+    FRONTEND_VISITS.inc()
     return templates.TemplateResponse("login.html", {"request": request})
 
 @app.post("/login")
 def login_post(username: str = Form(...), password: str = Form(...)):
-    user = get_user(username)
-    if not user or not pwd_context.verify(password, user["password_hash"]):
-        return HTMLResponse("<p>Usuario o contraseña inválidos.</p>", status_code=400)
-    token = create_token(username, user["rol"])
-    resp = RedirectResponse("/", status_code=302)
-    resp.set_cookie("access_token", token, httponly=True, samesite="lax")
-    return resp
+    start = time.time()
+    FRONTEND_VISITS.inc()
+    try:
+        user = get_user(username)
+        if not user or not pwd_context.verify(password, user["password_hash"]):
+            FRONTEND_ERRORS.inc()
+            return HTMLResponse("<p>Usuario o contraseña inválidos.</p>", status_code=400)
+
+        token = create_token(username, user["rol"])
+        resp = RedirectResponse("/", status_code=302)
+        resp.set_cookie(
+            "access_token",
+            token,
+            httponly=True,
+            samesite="lax",
+            secure=False
+        )
+        DASHBOARD_RENDER_TIME.observe(time.time() - start)
+        return resp
+    except Exception as e:
+        FRONTEND_ERRORS.inc()
+        logger.exception("login_post error: %s", e)
+        return HTMLResponse("<p>Error interno.</p>", status_code=500)
 
 @app.get("/register", response_class=HTMLResponse)
 def register_page(request: Request):
+    FRONTEND_VISITS.inc()
     return templates.TemplateResponse("register.html", {"request": request})
 
 @app.post("/register")
-def register_post(username: str = Form(...), password: str = Form(...), email: str = Form(None)):
-    if get_user(username):
-        return HTMLResponse("<p>El usuario ya existe.</p>", status_code=400)
-    create_user(username, password)
-    return RedirectResponse("/login", status_code=302)
+def register_post(username: str = Form(...), password: str = Form(...)):
+    start = time.time()
+    FRONTEND_VISITS.inc()
+    try:
+        if get_user(username):
+            FRONTEND_ERRORS.inc()
+            return HTMLResponse("<p>El usuario ya existe.</p>", status_code=400)
+        create_user(username, password)
+        DASHBOARD_RENDER_TIME.observe(time.time() - start)
+        return RedirectResponse("/login", status_code=302)
+    except Exception as e:
+        FRONTEND_ERRORS.inc()
+        logger.exception("register_post error: %s", e)
+        return HTMLResponse("<p>Error registrando usuario.</p>", status_code=500)
 
 @app.get("/logout")
 def logout():
     resp = RedirectResponse("/login", status_code=302)
-    resp.delete_cookie("access_token")
+    resp.delete_cookie("access_token", path="/")
     return resp
 
-# ---------- INTEGRACIÓN CON N8N (NUEVO FLUJO) ----------
+# ---------- Predict ----------
+@app.post("/predict")
+def predict_text(text: str = Form(...), user: dict = Depends(get_current_user_by_request)):
+    try:
+        resp = requests.post(CLASSIFIER_URL, json={"text": text}, timeout=10)
+        if not resp.ok:
+            FRONTEND_ERRORS.inc()
+            return JSONResponse({"error": "Error clasificando texto"}, status_code=500)
+        result = resp.json()
+        return {
+            "categoria": result.get("categoria", "Desconocido"),
+            "confianza": result.get("confianza", 0)
+        }
+    except Exception as e:
+        FRONTEND_ERRORS.inc()
+        logger.exception("predict error: %s", e)
+        return JSONResponse({"error": "Error interno clasificando"}, status_code=500)
+
+# ---------- Upload & SMAV Integration ----------
 @app.get("/upload", response_class=HTMLResponse)
 def upload_page(request: Request, user: dict = Depends(get_current_user_by_request)):
     return templates.TemplateResponse("upload.html", {"request": request, "user": user, "text": None, "category": None})
 
 @app.post("/upload", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), user: dict = Depends(get_current_user_by_request)):
+    start = time.time()
+    FRONTEND_UPLOADS.inc()
     try:
-        # 1. Leer el archivo
         file_bytes = await file.read()
-        
-        # 2. Enviar a n8n (WebHook)
-        # Usamos 'data' como key porque así se configuró en el Webhook de n8n
-        files = {'data': (file.filename, file_bytes, file.content_type)}
-        
-        print(f"🚀 Enviando archivo {file.filename} a n8n ({N8N_WEBHOOK_URL})...")
-        
-        # Enviamos la petición POST a n8n
-        response = requests.post(N8N_WEBHOOK_URL, files=files, timeout=600)
-        
+        files = {'file': (file.filename, file_bytes, file.content_type)}
+        response = requests.post(SMAV_PROCESS_URL, files=files, timeout=180)
         if not response.ok:
-            return HTMLResponse(f"<p>Error en n8n: {response.status_code} - {response.text}</p>", status_code=500)
-        
-        # 3. Procesar respuesta JSON de n8n
-        n8n_result = response.json()
-        
-        # Extraemos los datos que nos devuelve el nodo 'Respond to Webhook'
-        status = n8n_result.get("status", "unknown")
-        categoria = n8n_result.get("final_category", "Desconocido")
-        confianza_smav = n8n_result.get("smav_confidence", "N/A")
-        mensaje = n8n_result.get("message", "")
-        archivo_txt = n8n_result.get("classified_file_minio", "")
-
-        # Construimos un texto de resumen para guardar en la BD local y mostrar en pantalla
+            FRONTEND_ERRORS.inc()
+            return HTMLResponse(f"<p>Error en SMAV: {response.status_code} - {response.text}</p>", status_code=500)
+        smav_result = response.json()
+        texto_ocr = smav_result.get("extracted_text", "")
+        categoria = smav_result.get("final_category", "Desconocido")
+        confianza_smav = smav_result.get("smav_confidence", "N/A")
+        archivo_txt = smav_result.get("classified_file_minio", "")
         resumen_proceso = (
-            f"✅ Procesado por n8n.\n"
+            f"Procesado por SMAV.\n"
             f"Categoría: {categoria}\n"
             f"Confianza SMAV: {confianza_smav}\n"
             f"Archivo TXT: {archivo_txt}\n"
-            f"Mensaje: {mensaje}"
+            f"Mensaje: {smav_result.get('status','')}"
         )
-
-        # 4. Guardar Historial en PostgreSQL (Frontend DB)
-        # Aunque n8n guarda archivos, nosotros guardamos el registro de quién lo subió
         try:
             conn = get_db_conn()
             cur = conn.cursor()
@@ -233,18 +287,18 @@ async def upload_file(request: Request, file: UploadFile = File(...), user: dict
             cur.close()
             conn.close()
         except Exception as e:
-            print("⚠️ Error guardando en BD local:", e)
-
-        # 5. Mostrar resultado al usuario
+            logger.exception("Error guardando en BD local: %s", e)
+        DASHBOARD_RENDER_TIME.observe(time.time() - start)
         return templates.TemplateResponse("upload.html", {
             "request": request,
             "user": user,
             "result": resumen_proceso,
-            "category": categoria
+            "category": categoria,
+            "texto_ocr": texto_ocr
         })
-
     except Exception as e:
-        print("Upload flow error:", traceback.format_exc())
+        FRONTEND_ERRORS.inc()
+        logger.exception("Upload flow error: %s", e)
         return HTMLResponse(f"<p>Error procesando el archivo: {e}</p>", status_code=500)
 
 # ---------- HISTORIAL ----------
@@ -262,7 +316,8 @@ def history(request: Request, user: dict = Depends(get_current_user_by_request))
         cur.close()
         conn.close()
     except Exception as e:
-        print("⚠️ history error:", e)
+        FRONTEND_ERRORS.inc()
+        logger.exception("history error: %s", e)
     return templates.TemplateResponse("history.html", {"request": request, "rows": rows, "user": user})
 
 # ---------- ADMIN ----------
@@ -281,7 +336,8 @@ def admin_panel(request: Request, user: dict = Depends(get_current_user_by_reque
         cur.close()
         conn.close()
     except Exception as e:
-        print("⚠️ admin_panel error:", e)
+        FRONTEND_ERRORS.inc()
+        logger.exception("admin_panel error: %s", e)
     return templates.TemplateResponse("admin.html", {"request": request, "users": users, "stats": stats, "user": user})
 
 @app.get("/admin/stats")
@@ -297,8 +353,212 @@ def admin_stats(user: dict = Depends(get_current_user_by_request)):
         cur.close()
         conn.close()
     except Exception as e:
-        print("⚠️ admin_stats error:", e)
+        FRONTEND_ERRORS.inc()
+        logger.exception("admin_stats error: %s", e)
     return JSONResponse(stats)
+
+# ---------- MÉTRICAS GLOBALES (SOLO ADMIN) ----------
+@app.get("/admin/metrics", response_class=HTMLResponse)
+def admin_metrics(request: Request, user: dict = Depends(get_current_user_by_request)):
+    FRONTEND_VISITS.inc()
+
+    if user["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="No autorizado")
+
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+
+        # Total documentos clasificados
+        cur.execute("SELECT COUNT(*) FROM clasificaciones;")
+        total_docs = cur.fetchone()[0]
+
+        # Clasificados por categoría
+        cur.execute("""
+            SELECT categoria, COUNT(*)
+            FROM clasificaciones
+            GROUP BY categoria
+            ORDER BY COUNT(*) DESC;
+        """)
+        por_categoria = [{"categoria": r[0], "cantidad": r[1]} for r in cur.fetchall()]
+
+        # Clasificados por usuario
+        cur.execute("""
+            SELECT username, COUNT(*)
+            FROM clasificaciones
+            GROUP BY username
+            ORDER BY COUNT(*) DESC;
+        """)
+        por_usuario = [{"username": r[0], "cantidad": r[1]} for r in cur.fetchall()]
+
+        # Categoría más usada
+        cur.execute("""
+            SELECT categoria, COUNT(*) AS cnt
+            FROM clasificaciones
+            GROUP BY categoria
+            ORDER BY cnt DESC LIMIT 1;
+        """)
+        top_categoria_row = cur.fetchone()
+        top_categoria = {
+            "categoria": top_categoria_row[0],
+            "cantidad": top_categoria_row[1]
+        } if top_categoria_row else None
+
+        cur.close()
+        conn.close()
+
+        # -------- LEER METRICAS DE SMAV --------
+        prometheus_raw = ""
+        prometheus_error = None
+        try:
+            resp = requests.get(SMAV_METRICS_URL, timeout=10)
+            if resp.status_code == 200:
+                prometheus_raw = resp.text
+            else:
+                prometheus_error = f"SMAV returned status {resp.status_code}"
+        except Exception as e:
+            prometheus_error = f"ERROR obteniendo métricas de SMAV: {e}"
+
+        # -------- PARSEADOR ROBUSTO --------
+        metrics_list = []
+
+        if prometheus_raw:
+            help_map = {}
+            type_map = {}
+
+            for line in prometheus_raw.splitlines():
+                line = line.strip()
+
+                # HELP
+                if line.startswith("# HELP"):
+                    parts = line.split(" ", 3)
+                    if len(parts) >= 4:
+                        metric_name = parts[2]
+                        help_map[metric_name] = parts[3]
+
+                # TYPE
+                elif line.startswith("# TYPE"):
+                    parts = line.split(" ", 3)
+                    if len(parts) >= 4:
+                        metric_name = parts[2]
+                        type_map[metric_name] = parts[3]
+
+                # Métrica real
+                elif line and not line.startswith("#"):
+                    match = re.match(
+                        r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{.*?\})?\s+([0-9\.\+eE-]+)$',
+                        line
+                    )
+                    if match:
+                        metric_name = match.group(1)
+                        labels = match.group(2) or ""
+                        value = match.group(3)
+
+                        metrics_list.append({
+                            "name": metric_name,
+                            "labels": labels,
+                            "value": value,
+                            "help": help_map.get(metric_name, ""),
+                            "type": type_map.get(metric_name, "")
+                        })
+
+        # -------- RESPUESTA --------
+        return templates.TemplateResponse("metrics.html", {
+            "request": request,
+            "user": user,
+            "total_docs": total_docs,
+            "por_categoria": por_categoria,
+            "por_usuario": por_usuario,
+            "top_categoria": top_categoria,
+            "prometheus_raw": prometheus_raw,
+            "prometheus_error": prometheus_error,
+            "metrics_list": metrics_list
+        })
+
+    except Exception as e:
+        FRONTEND_ERRORS.inc()
+        logger.exception("admin_metrics error: %s", e)
+        return HTMLResponse("<p>Error obteniendo métricas</p>", status_code=500)
+
+# ---------- MÉTRICAS DE DOCUMENTOS SUBIDOS ----------
+@app.get("/admin/metrics/uploaded-documents", response_class=HTMLResponse)
+def metrics_uploaded_documents(request: Request, user: dict = Depends(get_current_user_by_request)):
+    if user["rol"] != "admin":
+        raise HTTPException(status_code=403, detail="No autorizado")
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT categoria, texto FROM clasificaciones;")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not rows:
+            return HTMLResponse("<p>No hay registros en la base de datos para calcular métricas.</p>", status_code=400)
+
+        true_labels = []
+        predicted_labels = []
+        smav_classify_url = os.getenv("SMAV_CLASSIFY_URL", "http://smav_service:8000/classify-text")
+
+        for row in rows:
+            true_cat = row[0]
+            text = row[1] or ""
+            true_labels.append(true_cat)
+            try:
+                resp = requests.post(smav_classify_url, json={"text": text}, timeout=10)
+                if resp.ok:
+                    j = resp.json()
+                    predicted_labels.append(j.get("categoria") or "Desconocido")
+                else:
+                    predicted_labels.append("Error")
+            except Exception as e:
+                FRONTEND_ERRORS.inc()
+                logger.exception("Error conectando a SMAV para predicción: %s", e)
+                predicted_labels.append("Error")
+
+        all_labels = sorted(list(set(true_labels) | set(predicted_labels)))
+        precision, recall, fscore, support = precision_recall_fscore_support(
+            true_labels, predicted_labels, labels=all_labels, zero_division=0
+        )
+        accuracy = accuracy_score(true_labels, predicted_labels)
+        f1_macro = fscore.mean()
+
+        # Matriz de confusión
+        cm = confusion_matrix(true_labels, predicted_labels, labels=all_labels)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        im = ax.imshow(cm, cmap='Blues')
+        ax.set_xticks(range(len(all_labels)))
+        ax.set_yticks(range(len(all_labels)))
+        ax.set_xticklabels(all_labels, rotation=45, ha='right')
+        ax.set_yticklabels(all_labels)
+        plt.colorbar(im)
+        buf = io.BytesIO()
+        plt.tight_layout()
+        plt.savefig(buf, format='png')
+        plt.close(fig)
+        buf.seek(0)
+        img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+
+        metrics_output = {
+            "labels": all_labels,
+            "precision": precision.tolist(),
+            "recall": recall.tolist(),
+            "fscore": fscore.tolist(),
+            "support": support.tolist(),
+            "accuracy": accuracy,
+            "f1_macro": f1_macro,
+            "confusion_matrix_img": img_base64
+        }
+
+        return templates.TemplateResponse("metrics.html", {
+            "request": request,
+            "user": user,
+            "metrics": metrics_output
+        })
+    except Exception as e:
+        FRONTEND_ERRORS.inc()
+        logger.exception("Error calculando métricas: %s", e)
+        return HTMLResponse("<p>Error al calcular las métricas.</p>", status_code=500)
 
 # ---------- Arranque ----------
 if __name__ == "__main__":

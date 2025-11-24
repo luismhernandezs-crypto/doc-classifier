@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1 class="text-2xl font-bold mb-6">🧑‍💻 Panel de Administración</h1>
+<h1 class="text-2xl font-bold mb-6">Panel de Administración</h1>
 
 <!-- Lista de usuarios -->
 <section class="mb-8">
@@ -34,7 +34,7 @@
 
     <!-- Botón de actualización -->
     <button id="refreshStats" class="bg-[#5865f2] px-4 py-2 rounded hover:bg-[#4752c4] mb-4 transition-all">
-        🔄 Actualizar estadísticas
+        Actualizar estadísticas
     </button>
 
     <table id="statsTable" class="w-full text-left border-collapse">
@@ -86,7 +86,7 @@ button.addEventListener('click', async () => {
             });
         }
     } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="2" class="text-center p-4 text-red-500">⚠️ Error al actualizar estadísticas.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="2" class="text-center p-4 text-red-500">⚠️Error al actualizar estadísticas.</td></tr>';
         console.error('Error al obtener estadísticas:', err);
     } finally {
         button.disabled = false;

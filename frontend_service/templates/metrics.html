@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h1 class="text-3xl font-bold mb-6">Métricas Globales</h1>
+
+<p class="text-gray-300 mb-8">
+  Resumen general de toda la actividad del sistema.
+</p>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <div class="bg-[#1e1f22] p-6 rounded-md shadow">
+    <h2 class="text-xl font-semibold mb-2">Total de documentos</h2>
+    <p class="text-4xl font-bold text-[#5865f2]">{{ total_docs }}</p>
+  </div>
+
+  <div class="bg-[#1e1f22] p-6 rounded-md shadow">
+    <h2 class="text-xl font-semibold mb-2">Categoría más utilizada</h2>
+    {% if top_categoria %}
+      <p class="text-2xl font-bold">{{ top_categoria.categoria }}</p>
+      <p class="text-gray-400">{{ top_categoria.cantidad }} documentos</p>
+    {% else %}
+      <p class="text-gray-400">No hay datos aún.</p>
+    {% endif %}
+  </div>
+
+  <div class="bg-[#1e1f22] p-6 rounded-md shadow">
+    <h2 class="text-xl font-semibold mb-2">Usuarios con actividad</h2>
+    <ul class="text-gray-300">
+      {% for u in por_usuario %}
+        <li>{{ u.username }}: {{ u.cantidad }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<!-- Gráfico Categorías -->
+<div class="bg-[#1e1f22] p-6 rounded-md mt-10">
+  <h2 class="text-2xl font-semibold mb-4">Documentos por categoría</h2>
+  <canvas id="categoriaChart"></canvas>
+</div>
+
+<!-- Métricas de Clasificación (ML) -->
+{% if false %}
+<div class="bg-[#1e1f22] p-6 rounded-md mt-10 overflow-x-auto">
+  <h2 class="text-2xl font-semibold mb-4">Métricas de Clasificación por Categoría</h2>
+  <table class="min-w-full divide-y divide-gray-700">
+    <thead>
+      <tr>
+        <th class="px-4 py-2 text-left text-gray-300">Categoría</th>
+        <th class="px-4 py-2 text-left text-gray-300">Precisión</th>
+        <th class="px-4 py-2 text-left text-gray-300">Recall</th>
+        <th class="px-4 py-2 text-left text-gray-300">F1 Score</th>
+        <th class="px-4 py-2 text-left text-gray-300">Soporte</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for i in range(metrics.labels | length) %}
+      <tr class="bg-[#2b2d31]">
+        <td class="px-4 py-2">{{ metrics.labels[i] }}</td>
+        <td class="px-4 py-2">{{ metrics.precision[i] | round(2) }}</td>
+        <td class="px-4 py-2">{{ metrics.recall[i] | round(2) }}</td>
+        <td class="px-4 py-2">{{ metrics.fscore[i] | round(2) }}</td>
+        <td class="px-4 py-2">{{ metrics.support[i] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="mt-4 text-gray-300">
+    <p><strong>Accuracy general:</strong> {{ metrics.accuracy | round(2) }}</p>
+    <p><strong>F1 Score Macro:</strong> {{ metrics.f1_macro | round(2) }}</p>
+  </div>
+</div>
+
+<div class="bg-[#1e1f22] p-6 rounded-md mt-10">
+  <h2 class="text-2xl font-semibold mb-4">Matriz de Confusión</h2>
+  <img src="data:image/png;base64,{{ metrics.confusion_matrix_img }}" alt="Matriz de Confusión"/>
+</div>
+{% endif %}
+
+<!-- Tabla Métricas Prometheus -->
+<div class="bg-[#1e1f22] p-6 rounded-md mt-10 overflow-x-auto">
+  <h2 class="text-2xl font-semibold mb-4">Métricas del SMAV (Prometheus)</h2>
+  <table class="w-full table-auto text-left border-collapse">
+    <thead>
+      <tr class="border-b border-gray-600">
+        <th class="p-2">Métrica</th>
+        <th class="p-2">Tipo</th>
+        <th class="p-2">Valor</th>
+        <th class="p-2">Comentario (HELP)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in metrics_list %}
+      <tr class="border-b border-gray-700 hover:bg-[#2b2d31]">
+        <td class="p-2">{{ m.name }}</td>
+        <td class="p-2">{{ m.type }}</td>
+        <td class="p-2">{{ m.value }}</td>
+        <td class="p-2">{{ m.help }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  const categoriaLabels = {{ por_categoria | map(attribute='categoria') | list | tojson }};
+  const categoriaValues = {{ por_categoria | map(attribute='cantidad') | list | tojson }};
+  new Chart(document.getElementById('categoriaChart'), {
+    type: 'bar',
+    data: {
+      labels: categoriaLabels,
+      datasets: [{
+        label: 'Cantidad de documentos',
+        data: categoriaValues,
+        backgroundColor: '#5865f2'
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } }
+    }
+  });
+</script>
+
+{% endblock %}

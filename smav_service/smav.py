@@ -1,42 +1,321 @@
-# smav.py - Servicio de Clasificación SMAV
-from fastapi import FastAPI, Request
+# smav_service/smav.py
+import os
+import io
 import joblib
 import numpy as np
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse, Response
+from minio import Minio
+from fastapi.responses import JSONResponse, FileResponse, Response
+import requests
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from preprocess import clean_text
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from metrics import (
+    DOCUMENTS_CLASSIFIED,
+    CATEGORY_COUNT,
+    CLASSIFICATION_TIME,
+    OCR_ERRORS,
+    update_ml_metrics
+)
 
-app = FastAPI(title="SMAV - Machine Learning Classifier")
+app = FastAPI(title="SMAV - Processor & Classifier")
 
-# Cargar modelo entrenado
-modelo = joblib.load("model.pkl")
+# Load model
+MODEL_PATH = os.getenv("MODEL_PATH", "model/model.pkl")
+modelo = joblib.load(MODEL_PATH)
 
+# Environment config
+OCR_URL = os.getenv("OCR_URL", "http://ocr_service:8000/extract-text")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "admin123")
+BUCKET_INCOMING = os.getenv("MINIO_BUCKET_INCOMING", "incoming-docs")
+BUCKET_CLASSIFIED = os.getenv("MINIO_BUCKET_CLASSIFIED", "classified-docs")
+
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "doc_classifier")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "admin")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin123")
+
+DB_CONFIG = {
+    "host": POSTGRES_HOST,
+    "port": POSTGRES_PORT,
+    "database": POSTGRES_DB,
+    "user": POSTGRES_USER,
+    "password": POSTGRES_PASSWORD,
+}
+
+minio_client = Minio(
+    MINIO_ENDPOINT.replace("http://", "").replace("https://", ""),
+    access_key=MINIO_ACCESS_KEY,
+    secret_key=MINIO_SECRET_KEY,
+    secure=False,
+)
+
+# Ensure buckets exist
+for b in (BUCKET_INCOMING, BUCKET_CLASSIFIED):
+    try:
+        if not minio_client.bucket_exists(b):
+            minio_client.make_bucket(b)
+    except Exception as e:
+        print(f"Could not ensure bucket {b}: {e}")
+
+
+# ---------------------------------------------------------
+# DB Save function
+# ---------------------------------------------------------
+def save_record_db(text, categoria):
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS clasificaciones (
+                id SERIAL PRIMARY KEY,
+                texto TEXT,
+                categoria VARCHAR(255),
+                fecha TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute(
+            "INSERT INTO clasificaciones (texto, categoria) VALUES (%s,%s)",
+            (text[:10000], categoria),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print("DB save error:", e)
+
+
+# ---------------------------------------------------------
+# Root endpoint
+# ---------------------------------------------------------
 @app.get("/")
 def root():
-    return {"message": "SMAV service is running"}
+    return {"message": "SMAV processor running"}
 
+
+# ---------------------------------------------------------
+# TEXT CLASSIFICATION
+# ---------------------------------------------------------
 @app.post("/classify-text")
-async def classify_text(request: Request):
-    data = await request.json()
-    text = clean_text(data.get("text", ""))
-
+async def classify_text_endpoint(payload: dict):
+    text = clean_text(payload.get("text", ""))
     if not text:
-        return {
-            "categoria": None,
-            "confianza": 0.0
-        }
+        return {"categoria": None, "confianza": 0.0}
 
-    # Predicción real
     categoria = modelo.predict([text])[0]
     probas = modelo.predict_proba([text])[0]
     confianza = float(np.max(probas))
 
-    # Filtro de baja confianza
-    if confianza < 0.55:
+    return {"categoria": categoria, "confianza": confianza}
+
+
+# ---------------------------------------------------------
+# PROCESS DOCUMENTS
+# ---------------------------------------------------------
+
+# Ruta para servir el modelo
+@app.get("/model")
+async def get_model():
+    model_path = "model.pkl"  # La ubicación del archivo del modelo
+    if os.path.exists(model_path):
+        return FileResponse(model_path, media_type="application/octet-stream", filename="model.pkl")
+    else:
+        return Response(content="Modelo no encontrado", status_code=404)
+
+# ---------------------------------------------------------
+# NEW: GLOBAL METRICS ENDPOINT (admin-only via gateway)
+# ---------------------------------------------------------
+@app.post("/process-document")
+async def process_document(file: UploadFile = File(...)):
+    # Medir tiempo total del procesamiento + clasificación
+    with CLASSIFICATION_TIME.time():
+
+        file_bytes = await file.read()
+        filename = file.filename or "documento"
+
+        # Upload to MinIO incoming
+        try:
+            minio_client.put_object(
+                BUCKET_INCOMING,
+                f"{filename}",
+                data=io.BytesIO(file_bytes),
+                length=len(file_bytes),
+                content_type=file.content_type or "application/octet-stream",
+            )
+            incoming_minio_path = f"s3://{BUCKET_INCOMING}/{filename}"
+        except Exception as e:
+            OCR_ERRORS.inc()
+            raise HTTPException(status_code=500, detail=f"MinIO upload error: {e}")
+
+        # OCR call
+        files = {"file": (filename, file_bytes, file.content_type)}
+        try:
+            ocr_resp = requests.post(OCR_URL, files=files, timeout=120)
+        except Exception as e:
+            OCR_ERRORS.inc()
+            raise HTTPException(status_code=502, detail=f"OCR connection error: {e}")
+
+        if ocr_resp.status_code != 200:
+            OCR_ERRORS.inc()
+            raise HTTPException(status_code=ocr_resp.status_code, detail=f"OCR error: {ocr_resp.text}")
+
+        ocr_json = ocr_resp.json()
+        extracted_text = ocr_json.get("extracted_text", "")
+
+        # Classification
+        text_clean = clean_text(extracted_text)
+        if not text_clean:
+            categoria = "Desconocido"
+            confianza = 0.0
+        else:
+            categoria = modelo.predict([text_clean])[0]
+            probas = modelo.predict_proba([text_clean])[0]
+            confianza = float(np.max(probas))
+
+        # MÉTRICAS SMAV
+        DOCUMENTS_CLASSIFIED.inc()
+        CATEGORY_COUNT.labels(categoria=categoria).inc()
+
+        # Build TXT for classified output
+        contenido = (
+            f"=== DOCUMENTO CLASIFICADO ===\n"
+            f"Archivo original: {filename}\n"
+            f"Categoria: {categoria}\n"
+            f"Confianza: {confianza:.4f}\n\n"
+            f"--- TEXTO EXTRAIDO ---\n{extracted_text}"
+        )
+
+        classified_name = f"{categoria.replace(' ','_')}_{int(__import__('time').time())}.txt"
+        classified_bytes = contenido.encode("utf-8")
+
+        # Upload classified file
+        try:
+            minio_client.put_object(
+                BUCKET_CLASSIFIED,
+                classified_name,
+                data=io.BytesIO(classified_bytes),
+                length=len(classified_bytes),
+                content_type="text/plain",
+            )
+            classified_minio_path = f"s3://{BUCKET_CLASSIFIED}/{classified_name}"
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"MinIO upload classified error: {e}")
+
+        # Save DB record
+        try:
+            save_record_db(extracted_text, categoria)
+        except Exception as e:
+            print("DB save failed:", e)
+
+        # Final response
+        return JSONResponse(
+            content={
+                "status": "success",
+                "original_file_minio": incoming_minio_path,
+                "classified_file_minio": classified_minio_path,
+                "final_category": categoria,
+                "smav_confidence": f"{confianza:.4f}",
+                "text_length": len(extracted_text),
+                "extracted_text": extracted_text,
+            }
+        )
+
+
+
+@app.get("/metrics/global")
+def get_global_metrics():
+    """
+    Endpoint que retorna métricas globales del sistema:
+    - Conteo por categoría
+    - Promedio de longitud de texto
+    - Últimos 20 registros
+    Además actualiza los gauges de Prometheus: accuracy, f1, precision, recall
+    """
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Obtener todos los registros
+        cur.execute("""
+            SELECT categoria AS true_label, texto
+            FROM clasificaciones
+            ORDER BY fecha ASC
+        """)
+        rows = cur.fetchall()
+
+        # Conteo por categoría
+        cur.execute("""
+            SELECT categoria, COUNT(*) AS cantidad
+            FROM clasificaciones
+            GROUP BY categoria
+            ORDER BY cantidad DESC
+        """)
+        conteo_por_categoria = cur.fetchall()
+
+        # Promedio de longitud de texto
+        cur.execute("""
+            SELECT AVG(LENGTH(texto)) AS promedio_longitud
+            FROM clasificaciones
+        """)
+        promedio_longitud = cur.fetchone()["promedio_longitud"]
+
+        # Últimos 20 registros
+        cur.execute("""
+            SELECT id, categoria, fecha, LENGTH(texto) AS longitud
+            FROM clasificaciones
+            ORDER BY fecha DESC
+            LIMIT 20
+        """)
+        ultimos = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        # ---------------- ACTUALIZAR METRICAS ML ----------------
+        if rows:
+            true_labels = [r["true_label"] for r in rows]
+            predicted_labels = []
+
+            for r in rows:
+                text_clean = clean_text(r["texto"])
+                if text_clean:
+                    pred = modelo.predict([text_clean])[0]
+                else:
+                    pred = "Desconocido"
+                predicted_labels.append(pred)
+
+            # Actualiza gauges de Prometheus
+            update_ml_metrics(true_labels, predicted_labels)
+
+        # ---------------- CONSTRUIR RESPUESTA ----------------
         return {
-            "categoria": None,
-            "confianza": confianza
+            "total_registros": len(rows),
+            "conteo_por_categoria": conteo_por_categoria,
+            "promedio_longitud_texto": promedio_longitud,
+            "ultimos_registros": ultimos,
         }
 
-    return {
-        "categoria": categoria,
-        "confianza": confianza
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB metrics error: {e}")
+
+#METRICS
+@app.get("/metrics")
+def metrics():
+    """
+    Endpoint oficial de Prometheus.
+    Exporta todas las métricas registradas:
+    - accuracy
+    - precision
+    - recall
+    - f1
+    - número de documentos procesados
+    - tiempo por clasificación
+    - etc.
+    """
+    data = generate_latest()
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
