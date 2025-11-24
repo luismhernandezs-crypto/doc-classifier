@@ -16,10 +16,6 @@ from sklearn.metrics import (
 
 DATASET_PATH = "dataset"   # carpeta principal
 
-
-# ============================================================
-# 1. Cargar dataset desde /train y /test
-# ============================================================
 def load_dataset(folder):
     textos = []
     etiquetas = []
@@ -60,9 +56,6 @@ print(f"Entrenamiento: {len(train_texts)} documentos")
 print(f"Test: {len(test_texts)} documentos")
 
 
-# ============================================================
-# 2. Modelo Machine Learning Profesional
-# ============================================================
 modelo = Pipeline([
     ("tfidf", TfidfVectorizer(
         max_features=12000,
@@ -76,25 +69,16 @@ modelo = Pipeline([
     ))
 ])
 
-
-# ============================================================
-# 3. Entrenamiento del modelo
-# ============================================================
 print("Entrenando modelo...")
 modelo.fit(train_texts, train_labels)
 
 
-# ============================================================
-# 4. Evaluación en TRAIN
-# ============================================================
+
 print("\nMETRICAS (TRAIN SET)")
 train_pred = modelo.predict(train_texts)
 print(classification_report(train_labels, train_pred))
 
 
-# ============================================================
-# 5. Evaluación en TEST (REAL)
-# ============================================================
 print("\nMETRICAS (TEST SET)")
 test_pred = modelo.predict(test_texts)
 
