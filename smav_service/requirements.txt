@@ -8,3 +8,10 @@ minio
 psycopg2-binary
 python-multipart
 prometheus-client
+pytesseract
+sentence-transformers
+pdf2image
+kaggle
+jiwer
+python-Levenshtein
+opencv-python-headless
