@@ -1,0 +1,160 @@
+{
+    "accuracy": 0.8764241893076249,
+    "classification_report": {
+        "Contratos": {
+            "precision": 0.8164556962025317,
+            "recall": 0.8835616438356164,
+            "f1-score": 0.8486842105263158,
+            "support": 146.0
+        },
+        "Correspondencia": {
+            "precision": 0.8698630136986302,
+            "recall": 0.8758620689655172,
+            "f1-score": 0.872852233676976,
+            "support": 145.0
+        },
+        "Educacion": {
+            "precision": 0.85,
+            "recall": 0.9006622516556292,
+            "f1-score": 0.8745980707395499,
+            "support": 151.0
+        },
+        "Facturas": {
+            "precision": 0.8943661971830986,
+            "recall": 0.8819444444444444,
+            "f1-score": 0.8881118881118881,
+            "support": 144.0
+        },
+        "Legal": {
+            "precision": 0.88,
+            "recall": 0.8527131782945736,
+            "f1-score": 0.8661417322834646,
+            "support": 129.0
+        },
+        "RecursosHumanos": {
+            "precision": 0.8716216216216216,
+            "recall": 0.8835616438356164,
+            "f1-score": 0.8775510204081632,
+            "support": 146.0
+        },
+        "Salud": {
+            "precision": 0.9259259259259259,
+            "recall": 0.8741258741258742,
+            "f1-score": 0.8992805755395683,
+            "support": 143.0
+        },
+        "Seguridad": {
+            "precision": 0.9212598425196851,
+            "recall": 0.8540145985401459,
+            "f1-score": 0.8863636363636364,
+            "support": 137.0
+        },
+        "accuracy": 0.8764241893076249,
+        "macro avg": {
+            "precision": 0.8786865371439366,
+            "recall": 0.8758057129621772,
+            "f1-score": 0.8766979209561954,
+            "support": 1141.0
+        },
+        "weighted avg": {
+            "precision": 0.8780614930899197,
+            "recall": 0.8764241893076249,
+            "f1-score": 0.8766937441874871,
+            "support": 1141.0
+        }
+    },
+    "confusion_matrix": [
+        [
+            129,
+            1,
+            1,
+            2,
+            6,
+            4,
+            3,
+            0
+        ],
+        [
+            4,
+            127,
+            7,
+            0,
+            3,
+            4,
+            0,
+            0
+        ],
+        [
+            4,
+            1,
+            136,
+            3,
+            3,
+            3,
+            1,
+            0
+        ],
+        [
+            7,
+            3,
+            3,
+            127,
+            0,
+            2,
+            0,
+            2
+        ],
+        [
+            3,
+            5,
+            2,
+            4,
+            110,
+            0,
+            2,
+            3
+        ],
+        [
+            3,
+            2,
+            2,
+            3,
+            1,
+            129,
+            3,
+            3
+        ],
+        [
+            3,
+            4,
+            4,
+            1,
+            0,
+            4,
+            125,
+            2
+        ],
+        [
+            5,
+            3,
+            5,
+            2,
+            2,
+            2,
+            1,
+            117
+        ]
+    ],
+    "total_train_docs": 4459,
+    "total_test_docs": 1141,
+    "categories": [
+        "Contratos",
+        "Correspondencia",
+        "Educacion",
+        "Facturas",
+        "Legal",
+        "RecursosHumanos",
+        "Salud",
+        "Seguridad"
+    ]
+}

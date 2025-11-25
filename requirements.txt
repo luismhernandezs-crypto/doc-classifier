@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+scikit-learn
+joblib
+numpy
+requests
+minio
+psycopg2-binary
+python-multipart
+prometheus-client
