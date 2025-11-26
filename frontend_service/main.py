@@ -256,17 +256,20 @@ async def upload_file(request: Request, file: UploadFile = File(...), user: dict
     start = time.time()
     FRONTEND_UPLOADS.inc()
     try:
+        # Leer archivo y enviar a SMAV
         file_bytes = await file.read()
         files = {'file': (file.filename, file_bytes, file.content_type)}
         response = requests.post(SMAV_PROCESS_URL, files=files, timeout=180)
         if not response.ok:
             FRONTEND_ERRORS.inc()
             return HTMLResponse(f"<p>Error en SMAV: {response.status_code} - {response.text}</p>", status_code=500)
+
         smav_result = response.json()
         texto_ocr = smav_result.get("extracted_text", "")
         smav_categoria = smav_result.get("final_category", "Desconocido")
         confianza_smav = smav_result.get("smav_confidence", None)
         archivo_txt = smav_result.get("classified_file_minio", "")
+
         resumen_proceso = (
             f"Procesado por SMAV.\n"
             f"Categoría: {smav_categoria}\n"
@@ -275,49 +278,68 @@ async def upload_file(request: Request, file: UploadFile = File(...), user: dict
             f"Mensaje: {smav_result.get('status','')}"
         )
 
-        # --- CALL classifier_service to obtain classifier_pred (we'll use it as ground_truth) ---
+        # --- Obtener predicción del clasificador ---
         classifier_pred = None
         try:
             if texto_ocr:
                 resp = requests.post(CLASSIFIER_URL, json={"text": texto_ocr}, timeout=10)
                 if resp.ok:
                     j = resp.json()
-                    # Ajusta la clave si tu classifier devuelve otra (categoria, label, etc.)
                     classifier_pred = j.get("categoria") or j.get("category") or j.get("label") or None
-                else:
-                    logger.warning(f"Classifier returned non-OK: {resp.status_code}")
         except Exception as e:
             logger.exception("Error calling classifier service: %s", e)
             classifier_pred = None
 
+        # --- Guardar en la base de datos ---
         try:
             conn = get_db_conn()
             cur = conn.cursor()
-            cur.execute("""
+
+            # Asegura que el usuario nunca sea None
+            username_db = user.get("username") or "anon"
+            # Ground truth igual a classifier_pred
+            ground_truth = classifier_pred
+
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS clasificaciones (
                     id SERIAL PRIMARY KEY,
                     texto TEXT,
                     categoria VARCHAR(255),
                     fecha TIMESTAMP DEFAULT NOW(),
-                    username VARCHAR(100),
+                    username VARCHAR(100) REFERENCES usuarios(username),
                     smav_pred VARCHAR(255),
                     classifier_pred VARCHAR(255),
                     ground_truth VARCHAR(255),
                     confidence NUMERIC
                 );
-            """)
+                """
+            )
+
             cur.execute(
                 """
                 INSERT INTO clasificaciones
-                (texto, categoria, fecha, username, smav_pred, classifier_pred, ground_truth, confidence)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (texto, categoria, username, smav_pred, classifier_pred, ground_truth, confidence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (resumen_proceso, smav_categoria, datetime.now(), user["username"], smav_categoria, classifier_pred, ground_truth, confianza_smav)
+                (
+                    resumen_proceso,
+                    smav_categoria,
+                    username_db,
+                    smav_categoria,
+                    classifier_pred,
+                    ground_truth,
+                    confianza_smav
+                )
             )
+
             conn.commit()
             cur.close()
             conn.close()
+            logger.info(f"Documento guardado: user={username_db}, categoria={smav_categoria}")
+
         except Exception as e:
+            FRONTEND_ERRORS.inc()
             logger.exception("Error guardando en BD local: %s", e)
 
         DASHBOARD_RENDER_TIME.observe(time.time() - start)
@@ -328,6 +350,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), user: dict
             "category": smav_categoria,
             "texto_ocr": texto_ocr
         })
+
     except Exception as e:
         FRONTEND_ERRORS.inc()
         logger.exception("Upload flow error: %s", e)
@@ -340,9 +363,18 @@ def history(request: Request, user: dict = Depends(get_current_user_by_request))
         conn = get_db_conn()
         cur = conn.cursor()
         if user["rol"] == "admin":
-            cur.execute("SELECT texto, categoria, fecha, username FROM clasificaciones ORDER BY fecha DESC")
+            cur.execute("""
+                SELECT texto, categoria, fecha, username
+                FROM clasificaciones
+                ORDER BY fecha DESC
+            """)
         else:
-            cur.execute("SELECT texto, categoria, fecha, username FROM clasificaciones WHERE username=%s ORDER BY fecha DESC", (user["username"],))
+            cur.execute("""
+                SELECT texto, categoria, fecha, username
+                FROM clasificaciones
+                WHERE username = %s
+                ORDER BY fecha DESC
+            """, (user["username"],))
         rows = cur.fetchall()
         cur.close()
         conn.close()

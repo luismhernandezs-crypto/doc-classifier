@@ -1,9 +1,42 @@
-venv/
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.pkl
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Logs
 *.log
-minio/
-n8n_data/
-postgres/
-.env
+
+# Cache
+.cache/
+*.cache
+*.egg-info/
+
+# System
+.DS_Store
+
+# Model files
+*.joblib
+*.model
+*.pkl
+
+# Colab
+.ipynb_checkpoints/
+
+# MinIO
+minio_data/
+
+# Frontend builds
+frontend_service/node_modules/
+frontend_service/dist/
+
+# IDE
+.vscode/
+.idea/
 
